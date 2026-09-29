@@ -46,6 +46,11 @@ class HandoverLLM:
         nbr_cols = torch.from_numpy(np.nonzero(prompts[0] == tok.NBR)[0] + 1)  # neighbour cell-id positions
         nbr_tok = x[:, nbr_cols]                                                # (U, K)
         cell_logits = torch.gather(logits[:, P], 1, nbr_tok)                   # restricted to reported cells
+        # a cell listed twice (padding of short reports) must not split its probability
+        dup = torch.zeros_like(nbr_tok, dtype=torch.bool)
+        for j in range(1, nbr_tok.shape[1]):
+            dup[:, j] = (nbr_tok[:, :j] == nbr_tok[:, j:j + 1]).any(dim=1)
+        cell_logits = cell_logits.masked_fill(dup, float("-inf"))
         p_cell = torch.softmax(cell_logits, dim=-1)
         return act[:, 0].cpu().numpy(), (act[:, 1:2] * p_cell).cpu().numpy()
 
@@ -106,30 +111,47 @@ class HandoverLLM:
         probability is below `min_confidence`, a conservative A3 rule is applied to
         the same report (safety fallback), and the answer says so.
         """
-        obs = report_to_observation(report, self.tok.obs_cfg)
-        prompt = self.tok.encode_prompts(obs)
-        p_stay, p_ho = self.score(prompt)
-        k = int(p_ho[0].argmax())
-        if p_ho[0, k] >= ho_threshold:
-            prefix, conf = [self.tok.HO, int(self.tok.cell(obs.nbr_ids[0, k]))], float(p_ho[0, k])
-        else:
-            prefix, conf = [self.tok.STAY], float(p_stay[0])
-        answer = self.explain_answer(self.generate(prompt[0], prefix=prefix))
-        answer.update(confidence=round(conf, 4), p_stay=round(float(p_stay[0]), 4),
-                      p_handover={int(c): round(float(p), 4) for c, p in zip(obs.nbr_ids[0], p_ho[0])},
-                      source="llm")
-        if conf < min_confidence:
-            gap = obs.nbr_hist[0, :, -a3_ttt:] - obs.serving_hist[0, -a3_ttt:]
-            ok = (gap > a3_hyst_db).all(axis=1)
-            if ok.any():
-                c = int(obs.nbr_ids[0][np.argmax(np.where(ok, obs.nbr_hist[0, :, -1], -np.inf))])
-                answer.update(action="HANDOVER", target_cell=c, source="a3_fallback",
-                              rationale=f"Low model confidence; A3 fallback: cell {c} exceeds serving by "
-                                        f">{a3_hyst_db} dB for the last {a3_ttt} reports.")
+        return self.decide_reports([report], ho_threshold, min_confidence, a3_hyst_db, a3_ttt, explain=True)[0]
+
+    def decide_reports(self, reports: list[dict], ho_threshold: float = 0.35, min_confidence: float = 0.3,
+                       a3_hyst_db: float = 3.0, a3_ttt: int = 3, explain: bool = True) -> list[dict]:
+        """Batched `handle_report`: one forward pass scores every report.
+
+        With ``explain=False`` no rationale is generated (≈10x faster); the
+        ``rationale`` field then only states the decision. The RAN integration
+        (`ai_ran_llm.ran.controller`) uses this to decide for many UEs at once.
+        """
+        if not reports:
+            return []
+        obs = stack_observations([report_to_observation(r, self.tok.obs_cfg) for r in reports])
+        prompts = self.tok.encode_prompts(obs)
+        p_stay, p_ho = self.score(prompts)
+        answers = []
+        for i in range(len(reports)):
+            k = int(p_ho[i].argmax())
+            if p_ho[i, k] >= ho_threshold:
+                prefix, conf = [self.tok.HO, int(self.tok.cell(obs.nbr_ids[i, k]))], float(p_ho[i, k])
             else:
-                answer.update(action="STAY", target_cell=None, source="a3_fallback",
-                              rationale="Low model confidence; A3 fallback: no neighbour meets the A3 entry condition.")
-        return answer
+                prefix, conf = [self.tok.STAY], float(p_stay[i])
+            ids = self.generate(prompts[i], prefix=prefix) if explain else prefix
+            answer = self.explain_answer(ids)
+            answer.update(confidence=round(conf, 4), p_stay=round(float(p_stay[i]), 4),
+                          p_handover=_first_per_cell(obs.nbr_ids[i], p_ho[i]),
+                          source="llm")
+            if conf < min_confidence:
+                gap = obs.nbr_hist[i, :, -a3_ttt:] - obs.serving_hist[i, -a3_ttt:]
+                ok = (gap > a3_hyst_db).all(axis=1)
+                if ok.any():
+                    c = int(obs.nbr_ids[i][np.argmax(np.where(ok, obs.nbr_hist[i, :, -1], -np.inf))])
+                    answer.update(action="HANDOVER", target_cell=c, source="a3_fallback",
+                                  rationale=f"Low model confidence; A3 fallback: cell {c} exceeds serving by "
+                                            f">{a3_hyst_db} dB for the last {a3_ttt} reports.")
+                else:
+                    answer.update(action="STAY", target_cell=None, source="a3_fallback",
+                                  rationale="Low model confidence; A3 fallback: no neighbour meets the A3 entry "
+                                            "condition.")
+            answers.append(answer)
+        return answers
 
     def explain_answer(self, ids: list[int]) -> dict:
         out = self.tok.explain(ids)
@@ -157,6 +179,19 @@ def report_to_observation(report: dict, obs_cfg: ObsConfig) -> Observation:
         sinr_db=np.array([float(report.get("sinr_db", 0.0))]),
         speed_kmh=np.array([float(report.get("speed_kmh", 30.0))]),
     )
+
+
+def _first_per_cell(cells, probs) -> dict:
+    out = {}
+    for c, p in zip(cells, probs):
+        out.setdefault(int(c), round(float(p), 4))
+    return out
+
+
+def stack_observations(observations: list[Observation]) -> Observation:
+    """Concatenate single- or multi-UE observations along the UE axis."""
+    return Observation(*(np.concatenate([getattr(o, f) for o in observations])
+                         for f in ("serving", "serving_hist", "nbr_ids", "nbr_hist", "sinr_db", "speed_kmh")))
 
 
 class LLMPolicy:

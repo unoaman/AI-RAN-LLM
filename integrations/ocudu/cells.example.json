@@ -1,0 +1,8 @@
+{
+  "_comment": "OCUDU / srsRAN Project: one gNB (gnb_id 411, 22-bit) with two cells. NR cell ids follow the CU-CP numbering (0x66C000, 0x66C001, ...); PCIs must match the DU config; e2_node_id is the E2 node as shown by the near-RT RIC (0x19b = 411). Edit to your deployment.",
+  "plmn": "00101",
+  "cells": [
+    {"index": 0, "pci": 1, "nci": "0x66C000", "gnb": "gnb-411", "e2_node_id": "gnbd_001_001_00019b_0", "neighbours": [1]},
+    {"index": 1, "pci": 2, "nci": "0x66C001", "gnb": "gnb-411", "e2_node_id": "gnbd_001_001_00019b_0", "neighbours": [0]}
+  ]
+}

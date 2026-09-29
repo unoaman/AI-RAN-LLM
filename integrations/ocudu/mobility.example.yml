@@ -1,0 +1,50 @@
+# OCUDU / srsRAN Project gNB (CU-CP) settings for use with the HandoverLLM xApp.
+# Merge into your gnb / cu config. Key names follow srsRAN's configs/mobility.yml;
+# check them against your OCUDU version (gnb --help, docs.ocudu.org).
+#
+# Two report configs per neighbour relation:
+#   1  periodical, 120 ms  -> feeds the xApp a regular RSRP history (serving + neighbours)
+#   2  A3 event, 8 dB      -> the CU-CP's own handover, kept as a BACKSTOP: it only fires
+#                             when a neighbour is far stronger for a while, i.e. when the
+#                             xApp has not acted (xApp down, UE unknown to the cell map...).
+# Do not disable the CU-CP's own handover (trigger_handover_from_measurements: false)
+# unless you accept that an xApp outage means no handovers at all.
+
+cu_cp:
+  mobility:
+    trigger_handover_from_measurements: true
+    cells:
+      - nr_cell_id: 0x66C000
+        periodic_report_cfg_id: 1          # periodic report of the serving cell
+        ncells:
+          - nr_cell_id: 0x66C001
+            report_configs: [ 1, 2 ]       # neighbour in periodic reports + backstop A3
+      - nr_cell_id: 0x66C001
+        periodic_report_cfg_id: 1
+        ncells:
+          - nr_cell_id: 0x66C000
+            report_configs: [ 1, 2 ]
+    report_configs:
+      - report_cfg_id: 1
+        report_type: periodical
+        report_interval_ms: 120            # model trained on 100-200 ms samples; 120 or 240 ms are
+                                           # the closest RRC ReportInterval values
+      - report_cfg_id: 2
+        report_type: event_triggered
+        event_triggered_report_type: a3
+        meas_trigger_quantity: rsrp
+        meas_trigger_quantity_offset_db: 8 # backstop only: well above the xApp's typical decision point
+        hysteresis_db: 1
+        time_to_trigger_ms: 480
+        report_interval_ms: 1024
+
+log:
+  filename: /tmp/gnb.log
+  rrc_level: debug                         # CU-CP prints decoded RRC messages (MeasurementReport as JSON)
+  ngap_level: info                         # lines with AMF UE NGAP ids  -> --learn-id
+  f1ap_level: info                         # lines with CU UE F1AP ids   -> --learn-id
+
+e2:
+  enable_cu_cp_e2: true                    # E2 agent for E2SM-RC handover control (key names vary by version)
+  addr: 10.0.2.10                          # near-RT RIC E2 termination
+  port: 36421

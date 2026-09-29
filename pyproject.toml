@@ -17,7 +17,7 @@ dev = ["pytest>=7"]
 ai-ran-llm = "ai_ran_llm.cli:main"
 
 [tool.setuptools]
-packages = ["ai_ran_llm"]
+packages = ["ai_ran_llm", "ai_ran_llm.ran"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

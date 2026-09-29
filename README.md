@@ -185,6 +185,8 @@ A few things to watch for with real data:
 | `ai_ran_llm/inference.py` | Scoring, grammar-constrained generation, confidence gating + A3 fallback, closed-loop policy. |
 | `ai_ran_llm/serve.py` | HTTP endpoint (`POST /v1/handover`) for a RIC/xApp integration. |
 | `ai_ran_llm/evaluate.py` | Closed-loop benchmark on identical drives: HandoverLLM vs A3 settings vs teacher. |
+| `ai_ran_llm/ran/` | Real-RAN integration: RRC MeasurementReport parsing (JSON/XER, TS 38.133), ran-bridge protocol, cell map, per-UE tracker, controller with guard rails, actuators (E2SM-RC, OAI telnet, srsRAN/OCUDU console, command), RRC log source, xApp runtime, fake gNB. See `docs/RAN_INTEGRATION.md`. |
+| `integrations/` | Example cell maps and RAN configs for OCUDU/srsRAN and OAI, the O-RAN SC RIC xApp, and a RAN-side bridge agent template. |
 
 ## Quick start
 
@@ -223,6 +225,10 @@ python -m ai_ran_llm export-raw --episodes 1 --out data/raw
 
 # 8. optional: build a corpus from your own traces (see Using real network data)
 python -m ai_ran_llm gen-data --from-drives traces/*.npz --out data/my_corpus.npz
+
+# 9. real RAN: see "Integrating with a real RAN" and docs/RAN_INTEGRATION.md
+python -m ai_ran_llm ran-xapp --cells sim --actuator bridge --live   # xApp (shadow mode without --live)
+python -m ai_ran_llm fake-gnb --ues 16                               # simulated gNB over the bridge
 
 pytest -q
 ```
@@ -316,16 +322,60 @@ position and heading, or longer history, than from relabelling.
 
 ## Integrating with a real RAN
 
-* **Inputs** map directly to the E2SM-KPM / RRC measurement report content: serving and
-  neighbour RSRP (L3-filtered), serving SINR (from CQI) and UE speed (from Doppler or
-  positioning).
-* **Outputs** map to an E2SM-RC control message (handover to the target PCI/NR-CGI). You
-  can also use them in "advisory" mode, tuning CIO or hysteresis per cell pair.
-* **Before a live deployment**, retrain on your own traces with
-  `gen-data --from-drives` (see *Using real network data*). The teacher can label logs
-  offline because the future RSRP is known. Tune
-  `ObsConfig` to your reporting interval and neighbour list size. Keep the confidence gate
-  and A3 fallback enabled.
+`ai_ran_llm/ran/` connects the model to a live gNB. **Full guide: [`docs/RAN_INTEGRATION.md`](docs/RAN_INTEGRATION.md).**
+It covers message formats and parsing, the step-by-step setup for OCUDU / srsRAN Project and
+OpenAirInterface, and the rollout checklist.
+
+```
+gNB (OCUDU / srsRAN / OAI)                          HandoverLLM xApp (python -m ai_ran_llm ran-xapp)
+  UE RRC MeasurementReport ─▶ CU-CP log (JSON/XER) ─▶ RrcLogSource ─┐
+  or a RAN-side agent ── ran-bridge NDJSON/TCP ────▶ BridgeServer ──┴▶ tracker ▶ model ▶ guard rails
+  E2SM-RC Handover Control ◀── near-RT RIC xApp ◀──┐                                       │
+  OAI telnet ci trigger_f1_ho / trigger_n2_ho ◀────┼──────────── actuator ◀───────────────┘
+  srsRAN/OCUDU console "ho pci rnti pci" ◀─────────┘            (shadow mode by default)
+```
+
+* **Getting measurements in:**
+  * The xApp parses the real 3GPP RRC **MeasurementReport**, either as JSON (srsRAN/OCUDU CU-CP
+    logs, tshark) or as asn1c XER (OAI).
+  * It converts RSRP/RSRQ/SINR report indices with the TS 38.133 mappings.
+  * Or a RAN-side agent streams simple JSON lines over the **ran-bridge** protocol. A template is
+    in `integrations/bridge-agent/`.
+* **Sending handovers:**
+  * **E2SM-RC Control Style 3 / Action 1 (Handover Control)** through srsRAN's O-RAN SC RIC
+    (`integrations/oran-sc-ric/`).
+  * **OAI telnet:** `ci trigger_f1_ho` / `ci trigger_n2_ho`.
+  * **srsRAN/OCUDU console:** `ho`.
+  * Any command (e.g. FlexRIC's `xapp_rc_handover`), or the bridge.
+* **Safety:**
+  * Shadow mode by default (`--live` to actuate); every decision goes to a JSONL audit log.
+  * Guard rails: pending command, failure backoff, hold-off, neighbour relation table,
+    confirmation count, rate limit.
+  * An optional A3 override for out-of-distribution inputs.
+  * Keep the RAN's own A3 handover as a backstop (example configs in `integrations/`).
+* **Tested without hardware:** a simulator-backed `fake-gnb` speaks the protocol. With guard
+  rails off, the full network path reproduces the offline benchmark exactly. `ran-parse` checks
+  that your gNB's logs parse before you connect anything.
+
+```bash
+python -m ai_ran_llm ran-parse /tmp/gnb.log --cells integrations/ocudu/cells.example.json   # check input
+python -m ai_ran_llm ran-xapp --cells integrations/ocudu/cells.example.json --rrc-log /tmp/gnb.log  # shadow
+python -m ai_ran_llm ran-xapp --cells sim --actuator bridge --live & python -m ai_ran_llm fake-gnb  # no radio
+```
+
+Measured on the benchmark drives through the fake gNB (details and more settings in the guide):
+
+| Setting | HO/UE/min | Ping-pong % | RLF/UE/min | HOF/UE/min | SE b/s/Hz | Outage % |
+|---|---:|---:|---:|---:|---:|---:|
+| Offline benchmark (`evaluate`) | 13.34 | 21.4 | 0.006 | 0.53 | 2.969 | 1.92 |
+| Real-RAN path, defaults (A3 override 6 dB) | 13.35 | 21.4 | 0.003 | 0.53 | 2.969 | 1.92 |
+| Real-RAN path, `--confirm 2` | 8.21 | 8.4 | 0.034 | 1.18 | 2.919 | 3.70 |
+
+**Status.** The integration code is tested against fakes and the simulator only. OAI/srsRAN
+command syntax and E2 calls follow their documentation and example xApps. It has not been run
+against a live gNB here. Start in shadow mode, and retrain on your own traces
+(`gen-data --from-drives`, see *Using real network data*) before trusting decisions on real
+radio.
 
 ## Limitations
 

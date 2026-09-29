@@ -8,8 +8,9 @@ it was developed (including the experiments that failed).
 It is written so that a human engineer **or another AI model** can pick the project up
 cold, understand every design choice, reproduce every number, and change it safely.
 
-> **Status.** Research prototype. Everything is trained and evaluated in a simulator;
-> nothing has been validated on a live network. See [§20 Limitations](#20-limitations-known-issues-and-risks).
+> **Status.** Research prototype. Everything is trained and evaluated in a simulator.
+> The real-RAN integration (§16.6, `docs/RAN_INTEGRATION.md`) is tested against fakes
+> and the simulator, but not against a live gNB. See [§20 Limitations](#20-limitations-known-issues-and-risks).
 
 ---
 
@@ -51,6 +52,7 @@ cold, understand every design choice, reproduce every number, and change it safe
 | Know *why* something is done a certain way | §5 (decision records), §21 (history) |
 | Understand an algorithm precisely | §7–§15 (formulas and pseudo-code) |
 | Call the system | §16 (CLI, HTTP API, Python API, file formats) |
+| Connect it to a real RAN (OCUDU / srsRAN, OAI) | §16.6 and `docs/RAN_INTEGRATION.md` |
 | Find a function | §17 |
 | Change the code without breaking reproducibility | §22 |
 | Know what not to trust | §20 |
@@ -133,10 +135,14 @@ working session (see §21).
 6. **Reproducible**: every dataset, model and number regenerable from seeds.
 7. **Bridge to real data and to general LLMs**: a documented trace format and a JSONL
    export for fine-tuning open LLMs.
+8. **Real-RAN integration**: read real RRC measurement reports and command handovers on
+   OCUDU / srsRAN Project and OpenAirInterface, safely (shadow mode, guard rails, backstop).
 
 **Non-goals (explicitly out of scope)**
 
-* A production E2 / O-RAN xApp SDK integration (only an HTTP stand-in).
+* A hardened, certified xApp product. The integration layer (§16.6) is a working reference:
+  E2SM-RC via srsRAN's O-RAN SC RIC framework, OAI telnet, console and a generic bridge. It
+  has not been validated on live RAN hardware.
 * Beam management, carrier aggregation, conditional handover (CHO), dual connectivity,
   load balancing, slicing.
 * A 3GPP-conformant system-level simulator (the simulator is a deliberately simple
@@ -213,6 +219,8 @@ flowchart TB
         SIM --> BENCH
     end
 ```
+
+The real-RAN side (sources, tracker, controller, actuators) is shown in §16.6.
 
 ### 4.4 The learning problem in one picture
 
@@ -360,6 +368,61 @@ Each entry: **decision**, **why**, **alternatives rejected and why not**.
 
 * **Why.** Users asked to commit them; they are small (3.4 MB, 25 MB, 5 MB) and make
   the repo usable immediately. Everything is also regenerable bit-for-bit from seeds.
+
+### D15. Real-RAN integration: vendor-neutral core, thin adapters
+
+* **Why.** OCUDU/srsRAN and OAI expose different mechanisms: logs, telnet, console, E2 with
+  different SM versions, FlexRIC or the O-RAN SC RIC. All of them reduce to two canonical
+  messages, `MeasReport` in and `HandoverCommand` out. The model, tracker and controller only
+  see canonical messages, and each RAN needs only a small adapter.
+* **Why not** write the xApp directly against one RIC SDK: that ties the decision logic to one
+  RIC and one SM version and makes it untestable without that RIC.
+
+### D16. Parse the real RRC MeasurementReport; do not rely on E2SM-KPM
+
+* **Why.** The model needs per-UE RSRP of serving **and neighbour** cells. That is exactly the
+  content of the RRC MeasurementReport (TS 38.331). Standard E2SM-KPM measurements do not
+  include per-UE neighbour RSRP. The parser works on the ASN.1 field names, so one parser
+  handles srsRAN/OCUDU JSON logs, tshark exports and asn1c XER (OAI).
+* **Why not** proprietary metric streams: they are version-specific and usually lack
+  neighbour measurements.
+
+### D17. ran-bridge: NDJSON over TCP
+
+* **Why.** Any RAN-side code (C, C++, Python) can emit JSON lines with no dependencies. The
+  protocol is easy to debug with `nc`, versioned (`ai-ran-llm/ran-bridge/1`), and doubles as
+  the fake gNB's transport, which makes the whole path testable.
+* **Why not** gRPC/protobuf or E2AP between agent and xApp: heavier toolchains for an
+  internal hop. E2 remains the actuation path where the RAN supports it.
+
+### D18. Safety model: shadow by default, guard rails, A3 override, RAN backstop
+
+* **Shadow mode** (`dry_run=True`) is the default, and actuation needs `--live`. Every decision
+  goes to an audit log.
+* **Guard rails** (pending, failure backoff, hold-off, neighbour relation table, confirmation
+  count, rate limit) bound the damage of a bad model or bad input.
+* **A3 override** (optional): the low-confidence fallback cannot catch *confident* mistakes on
+  out-of-distribution inputs. A synthetic report with an 18 dB-stronger neighbour and an
+  inconsistent SINR gave P(stay) = 0.998 (§21.13). The override hands over when a neighbour
+  leads by a large margin anyway.
+* **RAN backstop:** the example configs keep the RAN's own A3 handover at a conservative offset.
+  An xApp outage then degrades to classical behaviour instead of "no handovers". The first
+  draft disabled it; that was reversed once the failure mode was considered (§21.13).
+
+### D19. Guard timers use the report clock
+
+* **Why.** Reports carry RAN timestamps: simulation time, log time, or a RAN epoch. Outcomes may
+  come from a different clock. Mixing them made "time since last handover" negative and
+  blocked every handover (bug found by the end-to-end test, §21.13). All timers now use the
+  UE's latest report time.
+
+### D20. Lockstep fake gNB as the integration test
+
+* **Why.** A simulator-backed gNB that speaks the real protocol, waits for a `decision` per
+  report, and is scored by `run_policy` gives the same KPIs as the offline benchmark. With
+  guard rails off it must reproduce the benchmark **exactly**, which is a strong regression
+  test for parsing, resampling, routing and actuation. Timing does not affect results, because
+  of the lockstep.
 
 ---
 
@@ -842,14 +905,21 @@ sequenceDiagram
     S-->>C: 200 JSON
 ```
 
+**Batched form.** `decide_reports(reports, ...)` does the same for many reports with one
+forward pass. `explain=False` skips rationale generation (≈ 10× faster). `handle_report` is
+`decide_reports([report])[0]`, and the RAN controller uses the batched form.
+
 ### 15.5 Safety properties
 
 1. **No HO to an unreported cell** — scoring and generation are restricted to reported
    neighbour tokens.
 2. **Well-formed output** — the grammar makes malformed answers impossible.
-3. **Deterministic fallback** — A3 on the same report below the confidence floor,
+3. **Short reports do not dilute the decision** — when a report has fewer than K neighbours,
+   `report_to_observation` pads with copies; `score` masks duplicate cell tokens so the real
+   neighbour keeps all of P(ho → cell) (bug found during integration, §21.13).
+4. **Deterministic fallback** — A3 on the same report below the confidence floor,
    flagged `source: "a3_fallback"`.
-4. **Transparency** — full probability vector and rationale returned.
+5. **Transparency** — full probability vector and rationale returned.
 
 ### 15.6 Measured latency (4-core CPU, PyTorch 2.14, shipped checkpoint)
 
@@ -877,6 +947,9 @@ could be made asynchronous or cached (KV cache not implemented).
 | `serve` | HTTP endpoint | `--host 0.0.0.0 --port 8080 --ho-threshold 0.35 --min-confidence 0.3` |
 | `export-raw` | raw drives + readable reports | `--episodes 1 --ues 32 --steps 600 --seed 0 --out data/raw` |
 | `export-jsonl` | chat-format SFT data | `--data … --out data/handover_sft.jsonl --limit N` |
+| `ran-xapp` | handover xApp against a real RAN | `--cells FILE\|sim`, sources `--bridge HOST:PORT\|off`, `--rrc-log FILE`, `--id-regex`, `--learn-id`, `--pci-regex`; `--actuator log\|bridge\|oai-telnet\|console\|command`; `--live`; `--ho-threshold 0.35 --min-confidence 0.3 --confirm 1 --hold-off-s 0 --a3-override-db 6`; `--audit ran_audit.jsonl` |
+| `fake-gnb` | simulated gNB on the bridge | `--xapp HOST:PORT --ues 16 --steps 600 --seed 10000 --realistic` |
+| `ran-parse` | check a gNB log offline | `LOG --cells FILE --id-regex --learn-id --pci-regex` |
 
 ### 16.2 HTTP API — `serve.py`
 
@@ -980,6 +1053,73 @@ One line per corpus row:
 **Manifest** `drives.json`: `seed, n_ue, n_steps, dt_s, sim_config, obs_config,
 drives[{episode, file, behaviour_policy}]`. **Cells** `cells.csv`: `cell_id,x_m,y_m`.
 
+### 16.6 Real-RAN integration (`ai_ran_llm/ran/`)
+
+The full guide, with protocol spec, per-RAN setup and troubleshooting, is
+`docs/RAN_INTEGRATION.md`. Summary:
+
+```mermaid
+flowchart LR
+    subgraph IN["measurement sources"]
+        LOGS["RrcLogSource<br/>tail CU-CP log, RRC JSON / XER"]
+        BR["BridgeServer<br/>ran-bridge NDJSON/TCP"]
+    end
+    subgraph CORE["decision core"]
+        TRK["UEMeasurementTracker<br/>sample-and-hold to 5 × 200 ms"]
+        CTL["HandoverController<br/>decide_reports + A3 override<br/>+ guard rails"]
+    end
+    subgraph OUT["actuators"]
+        E2["OranScRicActuator<br/>E2SM-RC Style 3 / Action 1"]
+        OAI["OAITelnetActuator<br/>ci trigger_f1_ho / n2_ho"]
+        CON["ConsoleActuator<br/>ho pci rnti pci"]
+        CMD["CommandActuator"]
+        BRO["BridgeServer<br/>ho_command"]
+    end
+    LOGS --> TRK
+    BR --> TRK
+    TRK --> CTL
+    CTL --> E2
+    CTL --> OAI
+    CTL --> CON
+    CTL --> CMD
+    CTL --> BRO
+    CTL --> AUD[("audit JSONL")]
+    CM[("cell map JSON<br/>PCI / NCI / gNB / E2 node ↔ index")] --> TRK
+    CM --> CTL
+```
+
+* **Canonical messages** (`ran/messages.py`): `CellMeas`, `MeasReport`, `CellRef`,
+  `HandoverCommand`, `HandoverOutcome`, `UERelease`, `Hello`, `Decision`. On the wire they
+  follow the ran-bridge protocol `ai-ran-llm/ran-bridge/1`: NDJSON, with message types `hello`,
+  `meas_report`, `ho_outcome`, `ue_release` (RAN → xApp) and `ho_command`, `decision`, `error`
+  (xApp → RAN).
+* **RRC parsing** (`ran/rrc.py`):
+  * TS 38.133 index → value mappings: RSRP `n−157` dBm, RSRQ `(n−87)/2` dB, SINR `(n−47)/2` dB.
+  * `parse_measurement_report` finds `measResults` at any depth.
+  * `xer_to_dict` converts asn1c XER.
+  * `iter_asn1_blocks` extracts JSON/XER blocks from logs, together with their header lines.
+* **Cell map** (`ran/cells.py`): model index 0..63 ↔ PCI / NCI / PLMN / gNB / E2 node, plus the
+  neighbour relation table.
+* **Tracker** (`ran/tracker.py`): per-UE, per-cell time series, resampled at
+  `t_last − {800, 600, 400, 200, 0}` ms by sample-and-hold. It left-pads, drops neighbours not
+  seen for 2 s, and uses report timestamps only.
+* **Controller** (`ran/controller.py`), per batch:
+  * tracker update, then `decide_reports` (threshold + low-confidence A3 fallback), then the
+    optional A3 override;
+  * guard rails in order: pending → failure_backoff → hold_off → not_neighbour → confirm →
+    rate_limit;
+  * a `HandoverCommand`, marked `dry_run` in shadow mode.
+* **Actuators** (`ran/actuators.py`): E2SM-RC through srsRAN's O-RAN SC RIC framework
+  (`control_handover(e2_node_id, amf_ue_ngap_id, gnb_cu_ue_f1ap_id, plmn, target_nci)`), OAI
+  telnet, srsRAN/OCUDU console via FIFO, a generic command (argv, no shell), and a log-only
+  actuator.
+* **Runtime** (`ran/runtime.py`):
+  * processes events in order and batches consecutive reports;
+  * turns actuation errors into `failure` outcomes;
+  * echoes decisions to bridge agents and writes the audit JSONL.
+* **Fake gNB** (`ran/fake_gnb.py`): a simulator-backed bridge client, used as the `run_policy`
+  policy (D20).
+
 ---
 
 ## 17. File structure and function reference
@@ -990,7 +1130,8 @@ AI-RAN-LLM/
 ├── pyproject.toml                package metadata; deps numpy, torch; entry point ai-ran-llm
 ├── .gitignore                    ignores data/* and checkpoints/* except shipped artifacts
 ├── docs/
-│   └── DESIGN.md                 this document
+│   ├── DESIGN.md                 this document
+│   └── RAN_INTEGRATION.md        real-RAN integration guide (OCUDU / srsRAN, OAI)
 ├── ai_ran_llm/
 │   ├── __init__.py               exports configs, HandoverGPT, HandoverTokenizer; __version__
 │   ├── __main__.py               python -m ai_ran_llm → cli.main()
@@ -1004,9 +1145,27 @@ AI-RAN-LLM/
 │   ├── inference.py              HandoverLLM, constrained decoding, xApp logic, LLMPolicy
 │   ├── evaluate.py               benchmark harness and table formatting
 │   ├── serve.py                  HTTP endpoint
-│   └── cli.py                    command line + EXAMPLE_REPORT
+│   ├── cli.py                    command line + EXAMPLE_REPORT
+│   └── ran/                      real-RAN integration (§16.6)
+│       ├── messages.py           canonical messages + ran-bridge protocol
+│       ├── rrc.py                RRC MeasurementReport parsing, TS 38.133 mappings, log blocks
+│       ├── cells.py              cell map (RAN ids ↔ model index), neighbour relations
+│       ├── tracker.py            per-UE history, resampling to the model input
+│       ├── controller.py         decisions, A3 override, guard rails, commands
+│       ├── actuators.py          E2SM-RC, OAI telnet, console, command, log
+│       ├── sources.py            RRC log tailing + UE id learning
+│       ├── bridge.py             NDJSON/TCP server and client
+│       ├── runtime.py            xApp event loop + audit log
+│       ├── app.py                build an xApp from options (CLI, RIC wrapper)
+│       └── fake_gnb.py           simulator-backed gNB over the bridge
 ├── tests/
-│   └── test_pipeline.py          14 end-to-end and unit tests
+│   ├── test_pipeline.py          14 model / data / inference tests
+│   └── test_ran.py               16 real-RAN integration tests
+├── integrations/
+│   ├── ocudu/                    cells.example.json, mobility.example.yml (OCUDU / srsRAN)
+│   ├── oai/                      cells.example.json, measurement.example.conf
+│   ├── oran-sc-ric/              handover_llm_xapp.py (E2SM-RC xApp for srsRAN's RIC)
+│   └── bridge-agent/             example_agent.py (RAN-side agent template)
 ├── checkpoints/
 │   └── handover_llm.pt           shipped model (3.4 MB)
 └── data/
@@ -1108,6 +1267,8 @@ AI-RAN-LLM/
 | `.decide_batch(obs, ho_threshold)` | targets + confidence (§15.2) |
 | `.generate(prompt, max_new, prefix)` | constrained greedy decoding (§15.3) |
 | `.handle_report(report, ho_threshold, min_confidence, a3_hyst_db, a3_ttt)` | xApp logic (§15.4) |
+| `.decide_reports(reports, ..., explain)` | batched `handle_report`, one forward pass |
+| `stack_observations(list)` | concatenate `Observation`s along the UE axis |
 | `.explain_answer(ids)` | `explain` + raw tokens |
 | `report_to_observation(report, obs_cfg)` | JSON → `Observation` |
 | `LLMPolicy(llm, ho_threshold)` | policy adapter for `run_policy` |
@@ -1125,6 +1286,22 @@ AI-RAN-LLM/
 | `cli.main(argv)` | argparse dispatcher (§16.1) |
 | `cli.EXAMPLE_REPORT` | built-in example (serving 9 falling, cell 4 rising) |
 
+### 17.10 `ran/` (real-RAN integration)
+
+| Module | Names |
+|---|---|
+| `messages.py` | `PROTOCOL`, `ProtocolError`, `CellMeas`, `MeasReport`, `CellRef`, `HandoverCommand`, `HandoverOutcome` (`OUTCOMES`), `UERelease`, `Hello`, `Decision`, `encode(msg)`, `decode(line)` |
+| `rrc.py` | `rsrp_dbm/rsrq_db/sinr_db(index)`, `rsrp_index/sinr_index(value)`, `ParsedMeasReport`, `parse_measurement_report(dict)`, `xer_to_dict(xml)`, `LogBlock`, `iter_asn1_blocks(lines, header_filter, on_line)` |
+| `cells.py` | `CellMap.from_dict/load/to_dict/resolve/by_pci/is_neighbour/for_simulator` |
+| `tracker.py` | `UEMeasurementTracker.update/ready/history/build_report/serving/ue_ids/forget/gc` |
+| `controller.py` | `ControllerConfig` (threshold, fallback, `a3_override_db`, guard parameters, `dry_run`, `explain`), `HandoverController.on_reports/on_outcome/on_release`, `ControllerStats` |
+| `actuators.py` | `command_fields(cmd)`, `LogActuator`, `OAITelnetActuator(host, port, mode)`, `ConsoleActuator(path, template)`, `CommandActuator(template)`, `OranScRicActuator(xapp)`, `ActuationError` |
+| `sources.py` | `DEFAULT_ID_PATTERNS`, `follow_lines(path)`, `RrcLogSource(path, ..., learn_patterns)` (`reports()`, `to_report()`, `learn()`, `start(events)`) |
+| `bridge.py` | `BridgeServer(host, port, events)` (`start`, `send`, `send_handover`, `close`), `BridgeClient(host, port, node)` (`send`, `send_many`, `recv`) |
+| `runtime.py` | `XAppRuntime(controller, actuator, events, audit_path)` (`run`, `process`, `stop`, `close`) |
+| `app.py` | `XAppOptions`, `build_xapp(options, actuator=None)`, `load_cells(spec)` |
+| `fake_gnb.py` | `FakeGnb(ep, host, port, cell_map, report_every, report_all_cells, max_neighbours, quantize_rrc)` (`decide`, `on_handover`, `run`) |
+
 ---
 
 ## 18. Artifacts
@@ -1136,6 +1313,11 @@ AI-RAN-LLM/
 | `data/raw/reports.jsonl.gz` | 1.3 MB | `export-raw` (seed 0) | yes (gzip header timestamp differs) | 18 624 reports of drive 0, 8 641 `in_corpus` |
 | `data/raw/drive_000.npz` | 4.0 MB | `export-raw` | yes | full channel of drive 0 |
 | `data/raw/drives.json`, `cells.csv` | < 1 kB | `export-raw` | yes | drive 0 behaviour policy: delayed teacher p = 0.37 |
+
+Integration examples (hand-written, `integrations/`): `ocudu/cells.example.json`,
+`ocudu/mobility.example.yml`, `oai/cells.example.json`, `oai/measurement.example.conf`,
+`oran-sc-ric/handover_llm_xapp.py`, `bridge-agent/example_agent.py`. The config files follow
+upstream key names but must be adapted to your deployment and version.
 
 Not committed (regenerable): SFT JSONL (hundreds of MB for the full corpus), additional
 raw drives (~5 MB each), experiment checkpoints.
@@ -1181,6 +1363,23 @@ features reaches only AUC ≈ 0.83 for "teacher hands over to the strongest neig
 *will* be 2 dB better over the next second; the model stays with 0.99 confidence — the
 reasonable call from the report alone.
 
+### 19.4 Through the real-RAN path (fake gNB), guard rails and reporting
+
+Same 5 drives × 64 UEs × 60 s, run through bridge → tracker → controller → actuator → fake gNB:
+
+| Setting | HO/UE/min | Ping-pong % | RLF/UE/min | HOF/UE/min | SE b/s/Hz | Outage % |
+|---|---:|---:|---:|---:|---:|---:|
+| A3 (2 dB, 300 ms), for reference | 10.36 | 13.2 | 0.016 | 1.22 | 2.919 | 3.76 |
+| A: no guard rails, override off (= benchmark `evaluate`) | 13.34 | 21.4 | 0.006 | 0.53 | 2.969 | 1.92 |
+| I: **defaults**: no guard rails, A3 override 6 dB | 13.35 | 21.4 | 0.003 | 0.53 | 2.969 | 1.92 |
+| B: confirm 2 | 8.21 | 8.4 | 0.034 | 1.18 | 2.919 | 3.70 |
+| C: hold-off 1 s | 10.95 | 10.0 | 0.341 | 0.76 | 2.926 | 3.56 |
+| H: confirm 2, realistic reports (200 ms, 8 neighbours, RRC-quantised) | 6.21 | 4.2 | 0.263 | 1.45 | 2.869 | 5.46 |
+
+<!-- more rows -->
+
+Guard rails trade ping-pong for outage/RLF; the A3 override is free in-distribution. Defaults: confirm 1, hold-off 0, override 6 dB (see `docs/RAN_INTEGRATION.md` §6).
+
 ---
 
 ## 20. Limitations, known issues and risks
@@ -1209,6 +1408,20 @@ reasonable call from the report alone.
 * Cell ids limited to 0–63; real PCI/NR-CGI must be mapped externally.
 * HTTP server: no auth, TLS, rate limiting, or batching across requests.
 * Weight decay applies to all parameters (embeddings, LayerNorm) — simplification.
+
+**Real-RAN integration**
+
+* Not run against a live gNB here. The OAI/srsRAN commands, config keys and E2 call follow
+  upstream docs and example code, and may differ in your version.
+* Log header formats vary. UE ids and the serving PCI are extracted with configurable regexes,
+  which you must check with `ran-parse`.
+* The OAI telnet F1 trigger picks the target DU itself, so it matches the model's target only
+  with two DUs.
+* The model sees at most 4 neighbours, and reports with fewer are padded. That input was never
+  seen in training.
+* Real SINR and speed may be missing: the defaults are SINR 0 dB and 30 km/h.
+* The `rate_limit` guard uses wall-clock time, so disable it for faster-than-real-time replays.
+* The in-RIC xApp (`integrations/oran-sc-ric`) is untested without a RIC.
 
 **Evaluation**
 
@@ -1360,7 +1573,53 @@ The trained checkpoint was committed as requested.
 some other AI model can understand every bit … why, how, why not … design … all the
 interfaces with diagrams"*, then *"use this chat history as well"* → `docs/DESIGN.md`.
 
-### 21.13 Lessons learned
+### 21.13 Real-RAN integration (OCUDU / srsRAN, OAI)
+
+**User:** *"can you add more details for 'Integrating with a real RAN' … add new code for
+interacting with real ran … message structure, parsing … update the design doc … integrate
+with real ran like ocudu / oai ran"*
+
+**Research first.** Upstream sources were checked before writing code (§25):
+* OAI: telnet `ci trigger_f1_ho [cu-ue-id]` and `ci trigger_n2_ho <pci>,<rrc-ue-id>`,
+  `nr_measurement_configuration`, `nrRRC_stats.log`, FlexRIC `xapp_rc_handover`, and E2SM-RC
+  "Handover Control" (RC v1.03).
+* srsRAN's `oran-sc-ric`: `simple_rc_ho_xapp.py` → `e2sm_rc.control_handover(e2_node_id,
+  amf_ue_ngap_id, gnb_cu_ue_f1ap_id, plmn, target_nr_cell_id)`.
+* srsRAN `configs/mobility.yml` and the `ho <pci> <rnti> <pci>` console command.
+* OCUDU is the Linux Foundation continuation of srsRAN.
+* TS 38.133 report mappings.
+* Some documentation sites (docs.srsran.com, docs.ocudu.org) were blocked from this
+  environment, so those facts come from search snippets and GitHub sources.
+
+**Built.** The `ai_ran_llm/ran/` package (§16.6), the CLI commands `ran-xapp`, `fake-gnb` and
+`ran-parse`, the `integrations/` examples, `docs/RAN_INTEGRATION.md`, and 16 tests. Also a
+refactor: `decide_reports` is now shared by the benchmark path and the xApp.
+
+**Found and fixed along the way:**
+1. **Clock mixing.** Outcomes carried wall-clock time and reports carried RAN time. The
+   hold-off guard blocked 276 of 290 recommendations in the first end-to-end run. Fixed by
+   running all timers on the report clock (D19). After the fix, the network path reproduced the
+   benchmark exactly: identical trajectories on 16 UEs × 20 s, and identical KPIs on all 5
+   benchmark drives.
+2. **Padding split the handover probability.** With one reported neighbour (a 2-cell lab), the
+   3 padded copies split P(target) four ways (0.03 each instead of 0.14), so no handover ever
+   passed the threshold. Fixed by masking duplicate cell tokens in `score`.
+3. **Confident out-of-distribution mistakes.** In the synthetic agent demo, SINR was fixed at
+   +5 dB while the neighbour was 18 dB stronger, a combination never seen in training. The
+   model stayed with P = 0.998, and the low-confidence fallback cannot catch that. Added the
+   optional A3 override (D18) and made the demo's SINR physically consistent.
+4. **No backstop.** The first OCUDU example config disabled the CU-CP's own handover, so an
+   xApp outage would mean no handovers at all. Changed to keep A3 at 8 dB / 480 ms as a
+   backstop.
+5. **Operator readability.** Rationales named model cell indices ("cell 1"). The controller now
+   appends the PCI ("cell 1 (PCI 2)").
+6. **Test hygiene.** An unjoined daemon thread printed a C++ "terminate called" at interpreter
+   exit; the tests now join the xApp thread.
+
+**Measured.** Guard rails trade ping-pong for outage (§19.4). The model tolerates realistic
+reporting well (200 ms, 8 neighbours, RRC-quantised).
+
+### 21.14 Lessons learned
 
 1. Calibrate the simulator against a classical baseline *before* training anything.
 2. Per-sample accuracy is misleading for rare, partly unpredictable events; evaluate in
@@ -1372,6 +1631,10 @@ interfaces with diagrams"*, then *"use this chat history as well"* → `docs/DES
 6. Keep the deployed path (xApp) and the evaluated path (benchmark) on the same code.
 7. Make data generation bit-reproducible; it made "commit the data" and "export the raw
    data" verifiable.
+8. An end-to-end test that must reproduce a known result exactly (fake gNB = benchmark) finds
+   integration bugs (clocks, routing, padding) that unit tests miss.
+9. Handle *confident* errors separately from low-confidence ones. An ML controller in a live
+   network needs an independent, simple safety net and a RAN-side backstop.
 
 ---
 
@@ -1386,6 +1649,9 @@ interfaces with diagrams"*, then *"use this chat history as well"* → `docs/DES
 | Order of random-number consumption in `iter_labelled_drives` / `_label_steps` / `generate_episode` | bit-for-bit corpus regeneration and raw-export alignment | re-generate and re-commit the corpus and `data/raw`; update §11.6/§18 numbers |
 | `run_policy` trajectory = serving at report time | exported drives must rebuild identical reports | update `_logged_reports` and re-export |
 | HTTP request format = `reports.jsonl` format | exported reports can be sent straight to the endpoint | change both + README |
+| ran-bridge protocol `ai-ran-llm/ran-bridge/1` | RAN-side agents are written against it | add fields compatibly (optional); bump the version string for breaking changes |
+| Guard timers use report timestamps | mixed clocks silently block or allow handovers | keep every timer on `MeasReport.timestamp_s` |
+| Fake gNB with guards off ≡ offline benchmark | the integration regression test (`test_fake_gnb_end_to_end_equals_offline_policy`) | if you change decision logic, change it in `decide_reports` so both paths share it |
 
 ### 22.2 Common tasks
 
@@ -1403,6 +1669,9 @@ interfaces with diagrams"*, then *"use this chat history as well"* → `docs/DES
   aggressive); `--min-confidence` routes uncertain cases to A3.
 * **Add a baseline policy:** implement `decide(ep, t, obs)` (+ optional `reset`,
   `on_handover`) and add it to `evaluate.default_policies`.
+* **Add a RAN / actuator:** implement `send_handover(cmd)` (raise on failure) using
+  `command_fields(cmd)`; add a measurement source that yields `MeasReport`s into the runtime
+  queue, or write a bridge agent. Test against fakes as `tests/test_ran.py` does.
 * **Always run** `pytest -q` and `python -m ai_ran_llm evaluate` after changes.
 
 ### 22.3 Promising next steps
@@ -1413,13 +1682,16 @@ interfaces with diagrams"*, then *"use this chat history as well"* → `docs/DES
 3. Iterative DAgger: roll out the model, relabel its states with the teacher, retrain.
 4. RL fine-tuning on closed-loop KPIs starting from the supervised model.
 5. Pass `ObsConfig` through `train`/CLI; KV cache for rationale generation.
-6. E2SM-KPM/RC adapter and shadow-mode evaluation on real traffic.
+6. Shadow-mode evaluation on a live OCUDU/OAI testbed; a native FlexRIC actuator and an
+   E2SM-RC REPORT (message copy) measurement source.
 
 ---
 
 ## 23. Testing
 
-`pytest -q` — 14 tests in `tests/test_pipeline.py` (≈ 5 s):
+`pytest -q` — 30 tests (≈ 10 s): 14 in `tests/test_pipeline.py`, 16 in `tests/test_ran.py`.
+
+`tests/test_pipeline.py`:
 
 | Test | Checks |
 |---|---|
@@ -1438,7 +1710,27 @@ interfaces with diagrams"*, then *"use this chat history as well"* → `docs/DES
 | `test_handle_report_and_policy` | xApp answer, A3 fallback, closed-loop LLM policy |
 | `test_http_endpoint` | HTTP round trip |
 
-Tests use tiny randomly initialised models so they do not depend on the checkpoint.
+`tests/test_ran.py`:
+
+| Test | Checks |
+|---|---|
+| `test_38133_mappings` | RSRP/RSRQ/SINR index ↔ value |
+| `test_parse_measurement_report[json/xer]` | the same report parsed from srsRAN-style JSON and asn1c XER |
+| `test_log_blocks_and_source` | JSON/XER blocks in a log, header filter, UE ids, `--learn-id` |
+| `test_protocol_roundtrip_and_errors` | NDJSON round trip; malformed messages rejected |
+| `test_cell_map` | NCI/PCI resolution, duplicate PCI error, neighbour table, auto-add |
+| `test_tracker_resamples_sample_and_hold` | resampling, unknown serving cell, stale neighbours |
+| `test_controller_confirm_and_pending_and_hold_off` | guard order and timers |
+| `test_controller_neighbour_backoff_dry_run_and_inferred_success` | NRT, failure backoff, shadow mode, success inferred from reports |
+| `test_a3_override_catches_confident_stay` | override fires only when a neighbour leads; PCI in rationale |
+| `test_short_reports_do_not_split_probability` | padding fix |
+| `test_oai_telnet_actuator` | F1/N2 command lines, fake telnet server, error reply |
+| `test_console_command_and_e2_actuators` | console FIFO line, no argument injection, exit codes, E2SM-RC call arguments |
+| `test_bridge_errors_and_routing` | error reply, routing of commands to the reporting agent |
+| `test_runtime_actuation_failure_backs_off` | actuation error → failure outcome → backoff; audit log |
+| `test_fake_gnb_end_to_end_equals_offline_policy` | full network path ≡ `run_policy(LLMPolicy)` |
+
+Tests use tiny randomly initialised models (or a stub) so they do not depend on the checkpoint.
 
 ---
 
@@ -1465,6 +1757,17 @@ Tests use tiny randomly initialised models so they do not depend on the checkpoi
 | **Teacher / oracle** | non-causal labeller that sees the future |
 | **TTT** | time-to-trigger |
 | **UE** | user equipment |
+| **AMF UE NGAP ID / gNB-CU UE F1AP ID** | per-UE identifiers on NGAP / F1AP; E2SM-RC handover control on srsRAN/OCUDU addresses the UE with them |
+| **CU-CP** | central unit control plane: runs RRC, decides handovers |
+| **FlexRIC** | near-RT RIC and SDK from the OAI ecosystem |
+| **NCI / NR-CGI** | NR Cell Identity (36 bit) / NR Cell Global Identity = PLMN + NCI |
+| **NDJSON** | newline-delimited JSON, one object per line (ran-bridge framing) |
+| **NRT** | neighbour relation table (allowed handover targets per cell) |
+| **OCUDU** | Open Centralized Unit / Distributed Unit: the Linux Foundation continuation of srsRAN Project |
+| **PCI** | physical cell id (0..1007), reused across the network |
+| **RNTI (C-RNTI)** | cell radio network temporary identifier of a UE in a cell |
+| **Shadow mode** | the xApp decides and logs but does not actuate (`dry_run`) |
+| **XER** | XML encoding rules for ASN.1 (asn1c's `xer_fprint`) |
 
 ---
 
@@ -1501,6 +1804,21 @@ Models and methods:
 14. A. Karpathy, *nanoGPT* (GitHub) — reference structure for the decoder.
 15. I. Loshchilov and F. Hutter, "Decoupled weight decay regularization (AdamW),"
     *ICLR*, 2019.
+
+Real-RAN integration (verified sources for §16.6 and `docs/RAN_INTEGRATION.md`):
+
+16. OpenAirInterface, `doc/handover-tutorial.md` (openairinterface5g, develop): F1/N2
+    handover, telnet `ci trigger_f1_ho`, `ci trigger_n2_ho <pci>,<rrc-ue-id>`,
+    `neighbour_list`, `nr_measurement_configuration`, FlexRIC `xapp_rc_handover`.
+17. OpenAirInterface E2 agent merge request "Implement E2SM-RC On Demand and Handover Control"
+    (RC v1.03: report style 5, control style 3 handover).
+18. srsRAN, `oran-sc-ric` (github.com/srsran/oran-sc-ric): `xApps/python/simple_rc_ho_xapp.py`,
+    `lib/e2sm_rc_module.py` (`control_handover` = control style 3, action 1).
+19. srsRAN Project, `configs/mobility.yml`; gNB handover tutorial (`ho` console command);
+    discussion #803 (neighbour measurement reports, RRC JSON logs).
+20. OCUDU project (ocudu.org, docs.ocudu.org): the continuation of srsRAN Project under the Linux
+    Foundation, release 26.04.
+21. 3GPP TS 38.133 §10.1: SS-RSRP / SS-RSRQ / SS-SINR measurement report mapping.
 
 The parameter values in §6 are typical textbook/system-simulation choices informed by
 these sources, not values copied from a specific table unless stated.
