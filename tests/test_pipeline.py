@@ -11,7 +11,7 @@ from ai_ran_llm.config import ModelConfig, ObsConfig
 from ai_ran_llm.dataset import export_jsonl, generate_dataset
 from ai_ran_llm.inference import HandoverLLM, LLMPolicy, report_to_observation
 from ai_ran_llm.model import HandoverGPT
-from ai_ran_llm.policies import A3Policy, OraclePolicy, oracle_decision
+from ai_ran_llm.policies import A3Policy, OraclePolicy, label_decision, oracle_decision
 from ai_ran_llm.serve import make_handler
 from ai_ran_llm.simulator import build_observation, generate_episode, hex_sites, run_policy
 from ai_ran_llm.tokenizer import HandoverTokenizer
@@ -59,6 +59,21 @@ def test_oracle_targets_are_reported_neighbours():
     assert (target >= 0).all()
     assert all(t in row for t, row in zip(target, obs.nbr_ids))
     assert (gain > obs_cfg.oracle_margin_db).all()
+
+
+def test_smoothed_labels():
+    ep = _episode(32, 200, seed=3)
+    raw_cfg = ObsConfig(label_window=0, label_confirm_horizon=0)
+    serving = ep.rsrp_meas[:, 50].argmax(1)
+    obs = build_observation(ep, 50, serving, raw_cfg)
+    raw, _ = oracle_decision(ep, 50, obs, raw_cfg)
+    same, _ = label_decision(ep, 50, obs, raw_cfg)
+    np.testing.assert_array_equal(raw, same)                  # no smoothing == raw teacher
+    confirmed, _ = label_decision(ep, 50, obs, ObsConfig(label_window=0, label_confirm_horizon=20))
+    assert set(np.nonzero(confirmed >= 0)[0]) <= set(np.nonzero(raw >= 0)[0])   # confirm only removes HOs
+    early, _ = label_decision(ep, 50, obs, ObsConfig(label_window=3, label_confirm_horizon=0))
+    assert set(np.nonzero(raw >= 0)[0]) <= set(np.nonzero(early >= 0)[0])       # window only adds HOs
+    assert (early[raw >= 0] == raw[raw >= 0]).all()
 
 
 def test_closed_loop_metrics():

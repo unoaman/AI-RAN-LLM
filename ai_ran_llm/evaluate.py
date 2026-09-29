@@ -25,7 +25,7 @@ def benchmark(policies: dict, n_episodes: int = 5, n_ue: int = 64, n_steps: int 
     return {name: m.summary() for name, m in results.items()}
 
 
-def default_policies(llm=None, obs_cfg: ObsConfig | None = None, min_confidence: float = 0.5) -> dict:
+def default_policies(llm=None, obs_cfg: ObsConfig | None = None, ho_threshold: float = 0.35) -> dict:
     obs_cfg = obs_cfg or ObsConfig()
     pol = {
         "A3 (1dB, 200ms)": lambda: A3Policy(1.0, 2),
@@ -34,7 +34,7 @@ def default_policies(llm=None, obs_cfg: ObsConfig | None = None, min_confidence:
     }
     if llm is not None:
         from .inference import LLMPolicy
-        pol["HandoverLLM"] = lambda: LLMPolicy(llm, min_confidence)
+        pol["HandoverLLM"] = lambda: LLMPolicy(llm, ho_threshold)
     pol["Oracle (non-causal)"] = lambda: OraclePolicy(obs_cfg)
     return pol
 

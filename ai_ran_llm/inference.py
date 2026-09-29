@@ -49,12 +49,16 @@ class HandoverLLM:
         p_cell = torch.softmax(cell_logits, dim=-1)
         return act[:, 0].cpu().numpy(), (act[:, 1:2] * p_cell).cpu().numpy()
 
-    def decide_batch(self, obs: Observation, min_confidence: float = 0.5):
-        """Returns (target (U,) with -1 = stay, confidence (U,))."""
+    def decide_batch(self, obs: Observation, ho_threshold: float = 0.5):
+        """Hand over to the most likely neighbour when P(<ho> to it) >= `ho_threshold`.
+
+        Handovers are rare, so a threshold below 0.5 trades a few extra handovers
+        for earlier ones. Returns (target (U,) with -1 = stay, confidence (U,)).
+        """
         p_stay, p_ho = self.score(self.tok.encode_prompts(obs))
         k = p_ho.argmax(axis=1)
         best = p_ho[np.arange(len(k)), k]
-        do_ho = (best > p_stay) & (best >= min_confidence)
+        do_ho = best >= ho_threshold
         target = np.where(do_ho, obs.nbr_ids[np.arange(len(k)), k], -1)
         return target, np.where(do_ho, best, p_stay)
 
@@ -148,9 +152,9 @@ def report_to_observation(report: dict, obs_cfg: ObsConfig) -> Observation:
 class LLMPolicy:
     """Closed-loop policy for :func:`ai_ran_llm.simulator.run_policy`."""
 
-    def __init__(self, llm: HandoverLLM, min_confidence: float = 0.5):
+    def __init__(self, llm: HandoverLLM, ho_threshold: float = 0.5):
         self.llm = llm
-        self.min_confidence = min_confidence
+        self.ho_threshold = ho_threshold
 
     def decide(self, ep: Episode, t: int, obs: Observation) -> np.ndarray:
-        return self.llm.decide_batch(obs, self.min_confidence)[0]
+        return self.llm.decide_batch(obs, self.ho_threshold)[0]

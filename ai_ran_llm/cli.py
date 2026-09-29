@@ -32,7 +32,8 @@ def main(argv=None):
     e.add_argument("--episodes", type=int, default=5)
     e.add_argument("--ues", type=int, default=64)
     e.add_argument("--seed", type=int, default=10_000)
-    e.add_argument("--min-confidence", type=float, default=0.5)
+    e.add_argument("--ho-threshold", type=float, default=0.35,
+                   help="hand over when P(handover to best neighbour) >= this")
     e.add_argument("--json", help="also write results to this file")
 
     i = sub.add_parser("infer", help="decide for one JSON measurement report")
@@ -71,7 +72,7 @@ def main(argv=None):
         from .evaluate import benchmark, default_policies, format_table
         from .inference import HandoverLLM
         llm = HandoverLLM.load(a.ckpt)
-        res = benchmark(default_policies(llm, llm.tok.obs_cfg, a.min_confidence), a.episodes, a.ues, seed=a.seed)
+        res = benchmark(default_policies(llm, llm.tok.obs_cfg, a.ho_threshold), a.episodes, a.ues, seed=a.seed)
         print(format_table(res))
         if a.json:
             with open(a.json, "w") as f:

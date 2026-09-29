@@ -5,7 +5,7 @@ import json
 import numpy as np
 
 from .config import ObsConfig, SimConfig
-from .policies import A3Policy, OraclePolicy, oracle_decision
+from .policies import A3Policy, OraclePolicy, label_decision
 from .simulator import generate_episode, run_policy
 from .tokenizer import HandoverTokenizer
 
@@ -27,7 +27,7 @@ def generate_dataset(n_episodes: int, n_ue: int = 32, n_steps: int = 600, seed: 
                      verbose: bool = True) -> dict:
     """Returns {"tokens": (N, block_size) int64 padded with <pad>, "prompt_len": int}.
 
-    Labels always come from the look-ahead teacher. Samples where every
+    Labels always come from the smoothed look-ahead teacher (`label_decision`). Samples where every
     neighbour is >6 dB below the serving cell are trivially STAY and are
     subsampled with `easy_keep_prob`.
     """
@@ -41,9 +41,10 @@ def generate_dataset(n_episodes: int, n_ue: int = 32, n_steps: int = 600, seed: 
         ep = generate_episode(n_ue, n_steps, rng, sim)
         _, _, seen = run_policy(ep, _behaviour_policy(rng, obs_cfg), obs_cfg, record=True)
         for t, obs in seen:
-            if t < obs_cfg.hist_stride * (obs_cfg.hist_len - 1) or t + obs_cfg.oracle_horizon >= n_steps:
+            lookahead = max(obs_cfg.oracle_horizon + obs_cfg.label_window, obs_cfg.label_confirm_horizon)
+            if t < obs_cfg.hist_stride * (obs_cfg.hist_len - 1) or t + lookahead >= n_steps:
                 continue
-            target, gain = oracle_decision(ep, t, obs, obs_cfg)
+            target, gain = label_decision(ep, t, obs, obs_cfg)
             margin = obs.nbr_hist[:, 0, -1] - obs.serving_hist[:, -1]
             keep = (target >= 0) | (margin > -6.0) | (rng.uniform(size=len(target)) < easy_keep_prob)
             prompts = tok.encode_prompts(obs)
