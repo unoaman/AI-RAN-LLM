@@ -73,7 +73,8 @@ def prompt_to_text(tok: HandoverTokenizer, prompt_ids) -> str:
              + ", ".join(x[1:] for x in t[7:7 + h]) + "."]
     i = 7 + h
     while i < len(t) and t[i] == "<nbr>":
-        lines.append(f"Neighbour cell {t[i + 1][1:]}, RSRP history: " + ", ".join(x[1:] for x in t[i + 2:i + 2 + h]) + ".")
+        lines.append(f"Neighbour cell {t[i + 1][1:]}, RSRP relative to serving (dB): "
+                     + ", ".join(x[1:] for x in t[i + 2:i + 2 + h]) + ".")
         i += 2 + h
     return "\n".join(lines)
 

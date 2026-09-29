@@ -3,7 +3,10 @@
 A report is serialised with a fixed layout, e.g. (hist_len=5, 4 neighbours)::
 
     <bos> <spd> V6 <sinr> Q3 <srv> C9 R-92 R-93 R-93 R-95 R-96
-    <nbr> C4 R-97 R-96 R-94 R-93 R-91  <nbr> C10 ...  <ans>
+    <nbr> C4 D-5 D-3 D-1 D+2 D+5  <nbr> C10 ...  <ans>
+
+Serving RSRP is absolute; neighbour RSRP is given relative to the serving cell at
+the same instant (D tokens), which is the quantity handover decisions hinge on.
 
 and the model answers with a decision plus a short rationale::
 
@@ -12,7 +15,8 @@ and the model answers with a decision plus a short rationale::
 
 Every numeric value gets its own quantised token (RSRP in 1 dB, SINR in 1 dB,
 speed in 10 km/h bins, predicted gain in 1 dB), so the vocabulary stays small
-and every token carries radio meaning.
+and every token carries radio meaning. `numeric_features` gives numeric tokens a
+smooth value encoding so neighbouring values start with similar embeddings.
 """
 
 import numpy as np
@@ -28,6 +32,7 @@ RSRP_RANGE = (-140, -40)
 SINR_RANGE = (-20, 40)
 SPEED_BINS = 13          # 0-9, 10-19, ... 120+ km/h
 GAIN_RANGE = (-15, 15)
+DELTA_RANGE = (-30, 30)
 TREND_DB = 1.5
 
 
@@ -53,6 +58,8 @@ class HandoverTokenizer:
         tokens += [f"V{i}" for i in range(SPEED_BINS)]
         self.gain_base = len(tokens)
         tokens += [f"G{v:+d}" for v in range(GAIN_RANGE[0], GAIN_RANGE[1] + 1)]
+        self.delta_base = len(tokens)
+        tokens += [f"D{v:+d}" for v in range(DELTA_RANGE[0], DELTA_RANGE[1] + 1)]
         self.itos = tokens
         self.stoi = {s: i for i, s in enumerate(tokens)}
         for s in SPECIALS + WORDS:
@@ -86,6 +93,23 @@ class HandoverTokenizer:
         v = np.clip(np.rint(v), *GAIN_RANGE).astype(np.int64)
         return self.gain_base + v - GAIN_RANGE[0]
 
+    def delta(self, v):
+        v = np.clip(np.rint(v), *DELTA_RANGE).astype(np.int64)
+        return self.delta_base + v - DELTA_RANGE[0]
+
+    def numeric_features(self, dim: int) -> np.ndarray:
+        """(vocab, dim) sinusoidal encoding of each numeric token's value (0 elsewhere)."""
+        feats = np.zeros((self.vocab_size, dim))
+        freqs = 1.0 / (100.0 ** (np.arange(dim // 2) / max(dim // 2 - 1, 1)))
+        families = [(self.rsrp_base, RSRP_RANGE, 1.0), (self.sinr_base, SINR_RANGE, 1.0),
+                    (self.speed_base, (0, SPEED_BINS - 1), 5.0), (self.gain_base, GAIN_RANGE, 1.0),
+                    (self.delta_base, DELTA_RANGE, 1.0)]
+        for base, (lo, hi), scale in families:
+            v = np.arange(lo, hi + 1)[:, None] * scale * freqs[None]
+            feats[base:base + hi - lo + 1, 0:2 * len(freqs):2] = np.sin(v)
+            feats[base:base + hi - lo + 1, 1:2 * len(freqs):2] = np.cos(v)
+        return feats
+
     def is_cell(self, tok: int) -> bool:
         return self.cell_base <= tok < self.cell_base + MAX_CELLS
 
@@ -98,7 +122,8 @@ class HandoverTokenizer:
                  col(self.SINR), self.sinr(obs.sinr_db)[:, None],
                  col(self.SRV), self.cell(obs.serving)[:, None], self.rsrp(obs.serving_hist)]
         for k in range(obs.nbr_ids.shape[1]):
-            parts += [col(self.NBR), self.cell(obs.nbr_ids[:, k])[:, None], self.rsrp(obs.nbr_hist[:, k])]
+            parts += [col(self.NBR), self.cell(obs.nbr_ids[:, k])[:, None],
+                      self.delta(obs.nbr_hist[:, k] - obs.serving_hist)]
         parts.append(col(self.ANS))
         out = np.concatenate(parts, axis=1)
         assert out.shape[1] == self.prompt_len

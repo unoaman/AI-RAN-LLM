@@ -7,7 +7,7 @@ a near-RT RIC xApp (or an AI-RAN inference service next to the gNB).
 
 ```
 <bos> <spd> V9 <sinr> Q-1 <srv> C9 R-88 R-90 R-92 R-95 R-97
-<nbr> C4 R-99 R-96 R-94 R-92 R-89  <nbr> C10 R-97 R-97 R-98 R-98 R-99  ...  <ans>
+<nbr> C4 D-11 D-6 D-2 D+3 D+8  <nbr> C10 D-9 D-7 D-6 D-3 D-2  ...  <ans>
                                   ──▶  <ho> C4 <why> serving falling neighbor rising gain G+6 low_sinr <eos>
 ```
 

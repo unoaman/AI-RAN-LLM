@@ -66,7 +66,10 @@ def train(data_path: str, out_path: str, epochs: int = 3, batch_size: int = 256,
     cfg = model_cfg or ModelConfig()
     cfg.vocab_size = tok.vocab_size
     cfg.block_size = tokens.shape[1] - 1
-    model = HandoverGPT(cfg).to(device)
+    model = HandoverGPT(cfg)
+    with torch.no_grad():   # numeric tokens start with a smooth value encoding
+        model.tok_emb.weight += 0.05 * torch.from_numpy(tok.numeric_features(cfg.n_embd)).float()
+    model = model.to(device)
     print(f"model: {model.num_params() / 1e6:.2f}M params | train {len(trn)} | val {len(val)} | device {device}")
 
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1, betas=(0.9, 0.95))
