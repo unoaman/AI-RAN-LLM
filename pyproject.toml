@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-ran-llm"
+version = "0.1.0"
+description = "HandoverLLM: a domain-specific language model for AI-RAN mobility handover decisions"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "torch>=2.1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+ai-ran-llm = "ai_ran_llm.cli:main"
+
+[tool.setuptools]
+packages = ["ai_ran_llm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
