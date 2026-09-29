@@ -27,24 +27,23 @@ handover back, and the step-by-step setup for **OCUDU / srsRAN Project** and
 
 ```mermaid
 flowchart LR
-    subgraph RAN["gNB (OCUDU / srsRAN / OAI)"]
-        UE["UE: RRC MeasurementReport<br/>serving + neighbour RSRP"] --> CUCP["CU-CP (RRC)"]
-        CUCP --> LOG[("CU-CP log<br/>RRC as JSON / XER")]
-        CUCP --> E2A["E2 agent"]
-        TEL["telnet / console"] --> CUCP
-    end
-    subgraph XAPP["HandoverLLM xApp (ai_ran_llm.ran)"]
-        SRC["sources: RrcLogSource,<br/>BridgeServer"] --> TRK["UEMeasurementTracker<br/>resample to 5 × 200 ms"]
-        TRK --> CTL["HandoverController<br/>model + A3 override + guard rails"]
-        CTL --> ACT["actuator"]
-        CTL --> AUD[("audit JSONL")]
-    end
-    LOG -- "tail" --> SRC
-    AGENT["RAN-side agent<br/>(ran-bridge NDJSON)"] <--> SRC
-    ACT -- "E2SM-RC Control Style 3 / Action 1<br/>via near-RT RIC" --> E2A
-    ACT -- "OAI: ci trigger_f1_ho / trigger_n2_ho" --> TEL
-    ACT -- "srsRAN/OCUDU: ho pci rnti pci" --> TEL
-    ACT -- "ho_command" --> AGENT
+    UE["UE<br/>RRC MeasurementReport"] --> CUCP["gNB CU-CP (RRC)<br/>OCUDU / srsRAN / OAI"]
+    CUCP --> LOG[("CU-CP log<br/>RRC as JSON / XER")]
+    CUCP --> AGI["RAN-side agent<br/>meas_report (ran-bridge)"]
+    LOG --> SRC["xApp sources<br/>RrcLogSource / BridgeServer"]
+    AGI --> SRC
+    SRC --> TRK["UEMeasurementTracker<br/>5 × 200 ms history"]
+    TRK --> CTL["HandoverController<br/>model, A3 override, guard rails"]
+    CTL --> ACT["actuator"]
+    CTL --> AUD[("audit JSONL")]
+    ACT --> RIC["near-RT RIC<br/>E2SM-RC handover control"]
+    ACT --> TEL["OAI telnet<br/>ci trigger_f1_ho / n2_ho"]
+    ACT --> CON["srsRAN / OCUDU console<br/>ho pci rnti pci"]
+    ACT --> AGO["RAN-side agent<br/>ho_command (ran-bridge)"]
+    RIC --> EXE["gNB CU-CP executes the handover<br/>RRCReconfiguration with sync"]
+    TEL --> EXE
+    CON --> EXE
+    AGO --> EXE
 ```
 
 Measurement paths (choose one or more):
