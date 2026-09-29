@@ -20,7 +20,7 @@ def main(argv=None):
     t = sub.add_parser("train", help="train HandoverGPT")
     t.add_argument("--data", default="data/handover_corpus.npz")
     t.add_argument("--out", default="checkpoints/handover_llm.pt")
-    t.add_argument("--epochs", type=int, default=3)
+    t.add_argument("--epochs", type=int, default=2)
     t.add_argument("--batch-size", type=int, default=256)
     t.add_argument("--lr", type=float, default=1e-3)
     t.add_argument("--layers", type=int, default=4)
