@@ -803,14 +803,15 @@ HO to nbr_ids[k*]  if p_ho[k*] ≥ ho_threshold (default 0.35)   else STAY
 ### 15.3 Constrained generation — `generate(prompt, prefix=None)`
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Decision
-    Decision --> Cell: ho token
-    Decision --> Why: stay token
-    Cell --> Why: cell token of a reported neighbour
-    Why --> Rationale: why token
-    Rationale --> Rationale: word or gain token
-    Rationale --> [*]: eos token or 12 tokens
+flowchart TD
+    S(["start: prompt ends with the ans token"]) --> D{"step 1: decision token<br/>allowed: stay, ho"}
+    D -- "ho" --> C["step 2: target cell token<br/>allowed: only the 4 reported neighbours"]
+    D -- "stay" --> W["why token<br/>allowed: why only"]
+    C --> W
+    W --> R["rationale token<br/>allowed: rationale words, gain tokens, eos"]
+    R --> E{"eos emitted, or<br/>12 answer tokens reached?"}
+    E -- "no" --> R
+    E -- "yes" --> F(["end of answer"])
 ```
 
 Greedy argmax within the allowed set at each state. `prefix` forces the decision
@@ -829,9 +830,9 @@ sequenceDiagram
     L->>L: report_to_observation → encode_prompts
     L->>L: score → p_stay, p_ho[k]
     alt p_ho[k*] ≥ ho_threshold
-        L->>L: prefix = ho token + best cell, conf = p_ho[k*]
-    else
-        L->>L: prefix = stay token, conf = p_stay
+        L->>L: force ho + best cell, conf = p_ho[k*]
+    else otherwise
+        L->>L: force stay, conf = p_stay
     end
     L->>L: generate rationale (constrained)
     alt conf < min_confidence
