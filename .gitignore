@@ -1,4 +1,5 @@
-data/
+data/*
+!data/handover_corpus.npz
 checkpoints/*
 !checkpoints/handover_llm.pt
 __pycache__/

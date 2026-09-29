@@ -32,6 +32,19 @@ RSRP trajectories in the report:
 * **LLM-ecosystem friendly:** the same corpus exports as chat-format JSONL, so you can
   fine-tune any open LLM (Llama, Qwen, Mistral…) with standard SFT/LoRA tooling.
 
+## Training data
+
+`data/handover_corpus.npz` (25 MB) is the exact corpus the shipped model was trained on:
+
+* 527,512 samples from 60 simulated drives × 32 UEs × 60 s (seed 0), 12.5% of them handover
+  labels.
+* `tokens`: an int64 array of shape (527512, 64). Each row is the 41 report tokens, then the
+  answer, padded with `<pad>`.
+* `prompt_len`: 41.
+
+Decode a row with `HandoverTokenizer().decode(row)`. To export the corpus as chat-format JSONL
+for fine-tuning a general-purpose LLM, run `python -m ai_ran_llm export-jsonl`.
+
 ## Components
 
 | Module | What it does |
@@ -51,8 +64,9 @@ RSRP trajectories in the report:
 ```bash
 pip install -e .[dev]
 
-# a trained checkpoint ships in checkpoints/handover_llm.pt, so you can skip to step 3.
-# Steps 1-2 retrain it from scratch.
+# The trained checkpoint (checkpoints/handover_llm.pt) and the corpus it was trained on
+# (data/handover_corpus.npz) are committed. Skip to step 2 to retrain on the shipped data,
+# or to step 3 to use the shipped model. Step 1 regenerates the corpus exactly (seed 0).
 
 # 1. simulate 60 drives x 32 UEs x 60 s and build the corpus (~0.5 M samples, ~1 min)
 python -m ai_ran_llm gen-data --episodes 60 --ues 32
