@@ -369,6 +369,7 @@ Measured on the benchmark drives through the fake gNB (details and more settings
 |---|---:|---:|---:|---:|---:|---:|
 | Offline benchmark (`evaluate`) | 13.34 | 21.4 | 0.006 | 0.53 | 2.969 | 1.92 |
 | Real-RAN path, defaults (A3 override 6 dB) | 13.35 | 21.4 | 0.003 | 0.53 | 2.969 | 1.92 |
+| Real-RAN path, defaults, realistic reports (200 ms, 8 nbrs, RRC-quantised) | 11.03 | 16.4 | 0.016 | 0.85 | 2.944 | 2.79 |
 | Real-RAN path, `--confirm 2` | 8.21 | 8.4 | 0.034 | 1.18 | 2.919 | 3.70 |
 
 **Status.** The integration code is tested against fakes and the simulator only. OAI/srsRAN

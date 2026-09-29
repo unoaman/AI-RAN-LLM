@@ -1375,8 +1375,11 @@ Same 5 drives × 64 UEs × 60 s, run through bridge → tracker → controller �
 | B: confirm 2 | 8.21 | 8.4 | 0.034 | 1.18 | 2.919 | 3.70 |
 | C: hold-off 1 s | 10.95 | 10.0 | 0.341 | 0.76 | 2.926 | 3.56 |
 | H: confirm 2, realistic reports (200 ms, 8 neighbours, RRC-quantised) | 6.21 | 4.2 | 0.263 | 1.45 | 2.869 | 5.46 |
-
-<!-- more rows -->
+| G: defaults, realistic reports (200 ms, 8 neighbours, RRC-quantised) | 11.03 | 16.4 | 0.016 | 0.85 | 2.944 | 2.79 |
+| J: A3 override 8 dB instead of 6 dB | 13.35 | 21.4 | 0.003 | 0.53 | 2.969 | 1.92 |
+| K: confirm 2 + A3 override 8 dB | 8.22 | 8.4 | 0.028 | 1.18 | 2.919 | 3.68 |
+| D: confirm 2 + hold-off 1 s | 7.67 | 4.9 | 0.175 | 1.14 | 2.906 | 4.12 |
+| F: confirm 2 + hold-off 1 s, realistic reports | 6.03 | 3.0 | 0.322 | 1.41 | 2.865 | 5.59 |
 
 Guard rails trade ping-pong for outage/RLF; the A3 override is free in-distribution. Defaults: confirm 1, hold-off 0, override 6 dB (see `docs/RAN_INTEGRATION.md` §6).
 

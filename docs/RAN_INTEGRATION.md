@@ -279,8 +279,11 @@ benchmark drives, 64 UEs × 60 s each, the same drives as the README results.
 | B: confirm 2 | 8.21 | 8.4 | 0.034 | 1.18 | 2.919 | 3.70 |
 | C: hold-off 1 s | 10.95 | 10.0 | 0.341 | 0.76 | 2.926 | 3.56 |
 | H: confirm 2, realistic reports (200 ms, 8 neighbours, RRC-quantised) | 6.21 | 4.2 | 0.263 | 1.45 | 2.869 | 5.46 |
-
-<!-- more rows -->
+| G: defaults, realistic reports (200 ms, 8 neighbours, RRC-quantised) | 11.03 | 16.4 | 0.016 | 0.85 | 2.944 | 2.79 |
+| J: A3 override 8 dB instead of 6 dB | 13.35 | 21.4 | 0.003 | 0.53 | 2.969 | 1.92 |
+| K: confirm 2 + A3 override 8 dB | 8.22 | 8.4 | 0.028 | 1.18 | 2.919 | 3.68 |
+| D: confirm 2 + hold-off 1 s | 7.67 | 4.9 | 0.175 | 1.14 | 2.906 | 4.12 |
+| F: confirm 2 + hold-off 1 s, realistic reports | 6.03 | 3.0 | 0.322 | 1.41 | 2.865 | 5.59 |
 
 Reading:
 
@@ -294,8 +297,12 @@ Reading:
   therefore confirm 1 / hold-off 0. Use `--confirm 2` where signalling load or ping-pong
   matters more than throughput.
 * **Realistic reporting costs little.** Reports every 200 ms with 8 neighbours and RRC
-  quantisation (H vs B) cost about 0.05 b/s/Hz and some outage. The model tolerates coarser
-  input.
+  quantisation (G vs I, H vs B, F vs D) cost 0.03–0.05 b/s/Hz and about 1–1.5 points of
+  outage. With the defaults under realistic reporting (G), the model still beats A3 at
+  2 dB and 3 dB on spectral efficiency, outage and HOF. It no longer beats aggressive A3 at
+  1 dB on those (2.944 vs 2.959 b/s/Hz, 2.8 % vs 2.2 % outage), though A3 at 1 dB makes 62 %
+  more handovers with 31 % ping-pong.
+* **Combining guards** (D, F) gives the lowest ping-pong (3–5 %) at the highest RLF and outage.
 
 
 ---
