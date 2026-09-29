@@ -14,6 +14,11 @@ a near-RT RIC xApp (or an AI-RAN inference service next to the gNB).
 > "Hand over to cell 4: serving cell falling, neighbor cell rising, predicted RSRP gain +6 dB
 > over the next second, serving SINR is low."
 
+> **Full design and development record:** [`docs/DESIGN.md`](docs/DESIGN.md). It covers the
+> architecture and interface diagrams, algorithms, assumptions, the reasoning behind each
+> decision (and alternatives rejected), a per-function reference, the artifacts, and the
+> complete experiment history.
+
 ## Why an LLM for handover?
 
 Classical 3GPP handover (event **A3**: neighbour > serving + hysteresis for time-to-trigger)
