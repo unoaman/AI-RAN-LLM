@@ -96,7 +96,7 @@ Example response for the built-in report (`infer -`) from the trained checkpoint
 }
 ```
 
-In this example the model is arguably wrong. In the latest sample cell 4 is already 8 dB above the (falling) serving cell, and A3 would hand over. The model stays with only 56% confidence and gives cell 4 most of the rest. This is the model's known weakness: it is reluctant to hand over (13% HO recall; see Results). Raising `--min-confidence` (e.g. to 0.6) routes such uncertain cases to the A3 fallback, which would hand over to cell 4 here.
+This is a borderline case. Cell 4 overtook the falling serving cell only in the last two reports, but it is already 8 dB above it. The model stays with only 56% confidence and gives cell 4 most of the rest. The default A3 fallback (3 dB for 3 reports) would also stay one more report. This reluctance to hand over early is the model's main weakness today (13% HO recall; see Results).
 
 A report carries up to `n_neighbors` (4) neighbours and `hist_len` (5) L3-filtered RSRP
 samples per cell, taken every 200 ms (oldest first). Shorter histories are left-padded.
