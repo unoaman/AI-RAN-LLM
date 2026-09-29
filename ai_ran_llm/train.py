@@ -7,7 +7,7 @@ from dataclasses import asdict
 import numpy as np
 import torch
 
-from .config import ModelConfig, ObsConfig, SimConfig
+from .config import ModelConfig, SimConfig
 from .model import HandoverGPT
 from .tokenizer import MAX_CELLS, HandoverTokenizer
 
@@ -96,8 +96,8 @@ def train(data_path: str, out_path: str, epochs: int = 3, batch_size: int = 256,
                       f"lr {sched.get_last_lr()[0]:.2e} ({time.time() - t0:.0f}s)", flush=True)
         stats = evaluate_split(model, val.to(device), prompt_len, tok)
         print(f"epoch {ep + 1} val: " + ", ".join(f"{k} {v:.4f}" for k, v in stats.items()), flush=True)
-
-    torch.save({"model_cfg": cfg.to_dict(), "obs_cfg": asdict(ObsConfig()), "sim_cfg": asdict(SimConfig()),
-                "state_dict": model.state_dict(), "val": stats}, out_path)
-    print(f"saved {out_path}")
+        # save every epoch so an interrupted run still leaves a usable model
+        torch.save({"model_cfg": cfg.to_dict(), "obs_cfg": asdict(tok.obs_cfg), "sim_cfg": asdict(SimConfig()),
+                    "state_dict": model.state_dict(), "val": stats, "epoch": ep + 1}, out_path)
+        print(f"saved {out_path} (epoch {ep + 1})", flush=True)
     return model, stats
