@@ -1,0 +1,42 @@
+{
+  "seed": 0,
+  "n_ue": 32,
+  "n_steps": 600,
+  "dt_s": 0.1,
+  "sim_config": {
+    "rings": 2,
+    "isd_m": 500.0,
+    "dt_s": 0.1,
+    "tx_power_dbm": 15.0,
+    "noise_dbm": -125.0,
+    "load": 0.7,
+    "shadow_sigma_db": 6.0,
+    "shadow_decorr_m": 50.0,
+    "fading_sigma_db": 2.0,
+    "meas_sigma_db": 1.5,
+    "l3_alpha": 0.5,
+    "min_speed_kmh": 3.0,
+    "max_speed_kmh": 120.0,
+    "q_out_db": -8.0,
+    "t310_steps": 5,
+    "hof_sinr_db": -10.0,
+    "ping_pong_steps": 10,
+    "ho_interruption_s": 0.05
+  },
+  "obs_config": {
+    "n_neighbors": 4,
+    "hist_len": 5,
+    "hist_stride": 2,
+    "oracle_horizon": 10,
+    "oracle_margin_db": 2.0,
+    "label_window": 0,
+    "label_confirm_horizon": 0
+  },
+  "drives": [
+    {
+      "episode": 0,
+      "file": "drive_000.npz",
+      "behaviour_policy": "delayed teacher (executes each handover with p=0.37 per step)"
+    }
+  ]
+}

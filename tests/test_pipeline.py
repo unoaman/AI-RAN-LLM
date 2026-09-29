@@ -8,12 +8,12 @@ import torch
 
 from ai_ran_llm.cli import EXAMPLE_REPORT
 from ai_ran_llm.config import ModelConfig, ObsConfig
-from ai_ran_llm.dataset import export_jsonl, generate_dataset
+from ai_ran_llm.dataset import export_jsonl, export_raw, generate_dataset
 from ai_ran_llm.inference import HandoverLLM, LLMPolicy, report_to_observation
 from ai_ran_llm.model import HandoverGPT
 from ai_ran_llm.policies import A3Policy, OraclePolicy, label_decision, oracle_decision
 from ai_ran_llm.serve import make_handler
-from ai_ran_llm.simulator import build_observation, generate_episode, hex_sites, run_policy
+from ai_ran_llm.simulator import build_observation, generate_episode, hex_sites, load_episode, run_policy
 from ai_ran_llm.tokenizer import HandoverTokenizer
 from ai_ran_llm.train import make_batch
 
@@ -109,6 +109,22 @@ def test_dataset_and_jsonl(tmp_path):
     n = export_jsonl(d["tokens"], P, str(tmp_path / "x.jsonl"), limit=5)
     rows = [json.loads(line) for line in open(tmp_path / "x.jsonl")]
     assert n == 5 and rows[0]["messages"][2]["role"] == "assistant"
+
+
+def test_export_raw_matches_corpus(tmp_path):
+    import gzip
+    n = export_raw(str(tmp_path), n_episodes=2, n_ue=4, n_steps=80, seed=5, verbose=False)
+    corpus = generate_dataset(2, n_ue=4, n_steps=80, seed=5, verbose=False)
+    assert n["in_corpus"] == len(corpus["tokens"])            # same drives, same subsampling
+    recs = [json.loads(line) for line in gzip.open(tmp_path / "reports.jsonl.gz", "rt")]
+    assert len(recs) == n["reports"] and sum(r["in_corpus"] for r in recs) == n["in_corpus"]
+    r = recs[0]
+    assert len(r["serving_rsrp"]) == 5 and len(r["neighbors"]) == 4 and r["label"]["action"] in ("STAY", "HANDOVER")
+    ep = load_episode(str(tmp_path / "drive_001.npz"))
+    assert ep.rsrp_meas.shape == (4, 80, 19)
+    assert json.load(open(tmp_path / "drives.json"))["drives"][1]["file"] == "drive_001.npz"
+    obs = report_to_observation(r, ObsConfig())                 # reports are valid xApp requests
+    assert obs.nbr_ids.shape == (1, 4)
 
 
 def test_loss_masking_and_training_step():

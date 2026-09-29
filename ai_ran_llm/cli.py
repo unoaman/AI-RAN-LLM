@@ -50,6 +50,13 @@ def main(argv=None):
     s.add_argument("--min-confidence", type=float, default=0.3,
                    help="below this, the A3 fallback decides instead of the model")
 
+    r = sub.add_parser("export-raw", help="export the raw drives and readable measurement reports")
+    r.add_argument("--episodes", type=int, default=1, help="first N drives of the corpus")
+    r.add_argument("--ues", type=int, default=32)
+    r.add_argument("--steps", type=int, default=600)
+    r.add_argument("--seed", type=int, default=0)
+    r.add_argument("--out", default="data/raw")
+
     x = sub.add_parser("export-jsonl", help="export chat-format data to fine-tune a general LLM")
     x.add_argument("--data", default="data/handover_corpus.npz")
     x.add_argument("--out", default="data/handover_sft.jsonl")
@@ -90,6 +97,11 @@ def main(argv=None):
     elif a.cmd == "serve":
         from .serve import serve
         serve(a.ckpt, a.host, a.port, a.ho_threshold, a.min_confidence)
+
+    elif a.cmd == "export-raw":
+        from .dataset import export_raw
+        n = export_raw(a.out, a.episodes, a.ues, a.steps, a.seed)
+        print(f"wrote {n['reports']} reports ({n['in_corpus']} in the corpus) and {a.episodes} drive(s) to {a.out}/")
 
     elif a.cmd == "export-jsonl":
         from .dataset import export_jsonl

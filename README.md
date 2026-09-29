@@ -34,16 +34,96 @@ RSRP trajectories in the report:
 
 ## Training data
 
-`data/handover_corpus.npz` (25 MB) is the exact corpus the shipped model was trained on:
+All training data is **simulated**; no real network data is used. The measurement reports
+are produced by the simulator, labelled by a look-ahead teacher and tokenised:
 
-* 527,512 samples from 60 simulated drives × 32 UEs × 60 s (seed 0), 12.5% of them handover
-  labels.
-* `tokens`: an int64 array of shape (527512, 64). Each row is the 41 report tokens, then the
+```
+simulator.generate_episode      19-cell channel + UE mobility, every 100 ms
+        │                       (RSRP from every cell to every UE)
+        ▼
+simulator.run_policy            a behaviour policy (teacher / delayed teacher / random A3)
+        │                       decides the serving cell; one measurement report per UE per step
+        ▼
+policies.label_decision         teacher label: stay, or hand over to cell X
+        │                       (looks 1 s into the simulated future)
+        ▼
+dataset.generate_dataset        tokenise report + label ─▶ data/handover_corpus.npz
+```
+
+Two copies of the data are committed.
+
+### 1. `data/handover_corpus.npz`: what the model trains on (25 MB)
+
+This is the exact corpus the shipped checkpoint was trained on.
+
+* 527,512 samples from 60 drives × 32 UEs × 60 s, generated with seed 0. 12.5% of the samples
+  are handover labels.
+* `tokens`: int64 array of shape (527512, 64). Each row holds the 41 report tokens followed by the
   answer, padded with `<pad>`.
 * `prompt_len`: 41.
+* **Rounded values:** RSRP and SINR are rounded to 1 dB, and neighbour RSRP is stored relative
+  to the serving cell.
+* **Some reports are left out:** reports where every neighbour is more than 6 dB weaker are
+  trivially STAY, and only 10% of those are kept.
 
-Decode a row with `HandoverTokenizer().decode(row)`. To export the corpus as chat-format JSONL
-for fine-tuning a general-purpose LLM, run `python -m ai_ran_llm export-jsonl`.
+`python -m ai_ran_llm gen-data` regenerates this file bit-for-bit.
+
+### 2. `data/raw/`: the raw simulation behind the corpus, human-readable (5 MB sample)
+
+This is **drive 0 of the corpus** (32 UEs × 60 s), exported with
+`python -m ai_ran_llm export-raw`. It uses the same seed and random stream as `gen-data`,
+so these are exactly the drives the corpus came from.
+
+| File | Contents |
+|---|---|
+| `reports.jsonl.gz` | 18,624 measurement reports (every UE, every labelled step) with unrounded values, in the **same JSON format the xApp endpoint accepts**. Each report includes the teacher's `label` and `in_corpus` (whether it was kept in the corpus). The 8,641 reports marked `in_corpus` are exactly this drive's samples in `handover_corpus.npz`. |
+| `drive_000.npz` | The full channel of the drive (float32). `pos` (U,T,2) is UE position in m. `speed_kmh` (U,). `rsrp_true` (U,T,C) is large-scale RSRP, the teacher's view. `rsrp_inst` (U,T,C) adds fast fading and drives SINR. `rsrp_meas` (U,T,C) is the L3-filtered UE measurement, which is what the reports contain. `serving` and `sinr_db` (U,T) are under the behaviour policy. `sites` (C,2). |
+| `drives.json` | Seed, simulator and report configuration, and the behaviour policy of each drive. |
+| `cells.csv` | Cell id and site coordinates (m). |
+
+One report from `reports.jsonl.gz`:
+
+```json
+{"episode": 0, "ue_id": "ue-23", "t": 14, "time_s": 1.4, "serving_cell": 18, "speed_kmh": 10.8, "sinr_db": 5.4,
+ "serving_rsrp": [-85.7, -88.2, -87.1, -85.9, -83.9],
+ "neighbors": [{"cell_id": 14, "rsrp": [-86.4, -87.1, -89.7, -89.9, -88.2]},
+               {"cell_id": 10, "rsrp": [-92.2, -92.9, -90.5, -87.8, -91.2]},
+               {"cell_id": 9,  "rsrp": [-94.5, -93.5, -91.8, -93.4, -91.6]},
+               {"cell_id": 5,  "rsrp": [-99.0, -98.8, -98.8, -98.9, -96.1]}],
+ "label": {"action": "HANDOVER", "target_cell": 14, "gain_db": 2.1,
+           "rationale": "Hand over to cell 14: serving cell rising, neighbor cell falling, predicted RSRP gain +2 dB over the next second."},
+ "in_corpus": true}
+```
+
+This example also shows why the task is hard. Right now, cell 14 is weaker than the serving
+cell and falling. The teacher still says "hand over" because it can see that cell 14 will be
+2 dB better over the next second. The shipped model stays (0.99 confidence), which is the
+reasonable call from the report alone.
+
+Reading the data:
+
+```python
+import gzip, json, numpy as np
+from ai_ran_llm.simulator import load_episode
+
+reports = [json.loads(l) for l in gzip.open("data/raw/reports.jsonl.gz", "rt")]
+drive = np.load("data/raw/drive_000.npz")        # raw arrays
+ep = load_episode("data/raw/drive_000.npz")      # as a simulator Episode (replay any policy on it)
+```
+
+Export more drives with `export-raw --episodes N` (about 5 MB per drive). For fine-tuning a
+general-purpose LLM, `export-jsonl` writes the corpus as chat-format text.
+
+### Using real network data
+
+`load_episode` accepts the same `.npz` layout filled with real traces: RSRP per UE and cell
+(`rsrp_meas`, resampled to 100 ms). `rsrp_true` and `rsrp_inst` default to the measured values
+if missing. On such an Episode you can:
+
+* compute teacher labels offline with `policies.label_decision`, since the future is known in a log;
+* replay A3 or the model with `simulator.run_policy`.
+
+Building a corpus from real traces is not wired into the CLI yet.
 
 ## Components
 
@@ -52,7 +132,7 @@ for fine-tuning a general-purpose LLM, run `python -m ai_ran_llm export-jsonl`.
 | `ai_ran_llm/simulator.py` | Vectorised 19-cell hexagonal macro network (ISD 500 m): 3GPP path loss `128.1+37.6·log10(d)`, distance-correlated shadowing, fast fading, L3 filtering, Gauss-Markov UE mobility at 3–120 km/h. Closed-loop evaluation with T310-based RLF, HO failure, ping-pong (return within 1 s), HO interruption, SINR and spectral efficiency. |
 | `ai_ran_llm/policies.py` | 3GPP A3 baseline and the look-ahead teacher (`oracle_decision`) used for labels. |
 | `ai_ran_llm/tokenizer.py` | 349-token domain vocabulary: quantised RSRP/SINR/speed/gain tokens, neighbour-minus-serving deltas, cell IDs, structure and rationale words. |
-| `ai_ran_llm/dataset.py` | Builds the corpus by driving simulations with a mix of behaviour policies (teacher, delayed teacher, randomised A3). This covers both good and off-optimal serving states, in the spirit of DAgger. Also exports JSONL for fine-tuning a general-purpose LLM. |
+| `ai_ran_llm/dataset.py` | Builds the corpus by driving simulations with a mix of behaviour policies (teacher, delayed teacher, randomised A3). This covers both good and off-optimal serving states, in the spirit of DAgger. Also exports JSONL for fine-tuning a general-purpose LLM, and the raw drives and readable reports (`export_raw`). |
 | `ai_ran_llm/model.py` | Decoder-only GPT (pre-LN, causal SDPA, tied embeddings). Default: 4 layers, 4 heads, 128-d, ~0.85 M parameters. It is small enough for near-RT (<10 ms) CPU inference. |
 | `ai_ran_llm/train.py` | Causal-LM training. Full weight on answer tokens, and 0.1 weight on report tokens as a light telemetry-forecasting objective. |
 | `ai_ran_llm/inference.py` | Scoring, grammar-constrained generation, confidence gating + A3 fallback, closed-loop policy. |
@@ -90,6 +170,9 @@ curl -s localhost:8080/v1/handover -d '{
 
 # 6. optional: export chat-format SFT data to fine-tune a general-purpose LLM
 python -m ai_ran_llm export-jsonl --limit 100000
+
+# 7. optional: export raw drives + readable measurement reports (see Training data)
+python -m ai_ran_llm export-raw --episodes 1 --out data/raw
 
 pytest -q
 ```
@@ -189,7 +272,8 @@ position and heading, or longer history, than from relabelling.
 * **Outputs** map to an E2SM-RC control message (handover to the target PCI/NR-CGI). You
   can also use them in "advisory" mode, tuning CIO or hysteresis per cell pair.
 * **Before a live deployment**, retrain on your own traces. You can replay drive-test or
-  RIC logs through `oracle_decision`, because the future RSRP is known offline. Tune
+  RIC logs through `label_decision` via `load_episode` (see *Using real network data*),
+  because the future RSRP is known offline. Tune
   `ObsConfig` to your reporting interval and neighbour list size. Keep the confidence gate
   and A3 fallback enabled.
 

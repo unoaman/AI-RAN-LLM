@@ -111,6 +111,29 @@ def generate_episode(n_ue: int, n_steps: int, rng: np.random.Generator,
     return Episode(sites, pos, speed_kmh, rsrp_true, rsrp_inst, meas, sim)
 
 
+def save_episode(path: str, ep: Episode, **extra) -> None:
+    """Store a drive's channel as float32 arrays (plus any `extra` arrays)."""
+    np.savez_compressed(path, sites=ep.sites, pos=ep.pos.astype(np.float32),
+                        speed_kmh=ep.speed_kmh.astype(np.float32),
+                        rsrp_true=ep.rsrp_true.astype(np.float32), rsrp_inst=ep.rsrp_inst.astype(np.float32),
+                        rsrp_meas=ep.rsrp_meas.astype(np.float32), **extra)
+
+
+def load_episode(path: str, sim: SimConfig | None = None) -> Episode:
+    """Load a drive saved by :func:`save_episode`.
+
+    The same layout can hold real traces (e.g. drive-test or RIC logs resampled
+    to `dt_s`). `rsrp_meas` is what policies see. `rsrp_true` (the teacher's
+    future view) and `rsrp_inst` (SINR) default to `rsrp_meas` if absent.
+    """
+    d = np.load(path)
+    meas = d["rsrp_meas"].astype(np.float64)
+    get = lambda k, default: d[k].astype(np.float64) if k in d else default
+    return Episode(sites=get("sites", np.zeros((meas.shape[2], 2))), pos=get("pos", np.zeros(meas.shape[:2] + (2,))),
+                   speed_kmh=get("speed_kmh", np.zeros(meas.shape[0])), rsrp_true=get("rsrp_true", meas),
+                   rsrp_inst=get("rsrp_inst", meas), rsrp_meas=meas, sim=sim or SimConfig())
+
+
 # ---------------------------------------------------------------------------
 # Measurement reports
 # ---------------------------------------------------------------------------
