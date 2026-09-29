@@ -64,13 +64,17 @@ class HandoverLLM:
 
     # --------------------------------------------------------------- generation
     @torch.no_grad()
-    def generate(self, prompt: np.ndarray, max_new: int = 12) -> list[int]:
-        """Greedy grammar-constrained generation of the full answer for one report."""
+    def generate(self, prompt: np.ndarray, max_new: int = 12, prefix: list[int] | None = None) -> list[int]:
+        """Greedy grammar-constrained generation of the full answer for one report.
+
+        `prefix` forces the start of the answer (e.g. the decision) so the model
+        only writes the rationale for it.
+        """
         tok = self.tok
         nbr_cells = torch.from_numpy(prompt[np.nonzero(prompt == tok.NBR)[0] + 1])
-        seq = torch.from_numpy(prompt).to(self.device)[None]
-        out: list[int] = []
-        for _ in range(max_new):
+        out: list[int] = list(prefix or [])
+        seq = torch.from_numpy(np.concatenate([prompt, np.asarray(out, dtype=prompt.dtype)])).to(self.device)[None]
+        while len(out) < max_new:
             if not out:
                 allowed = torch.tensor([tok.STAY, tok.HO])
             elif out == [tok.HO]:
@@ -88,7 +92,7 @@ class HandoverLLM:
         return out
 
     # -------------------------------------------------------------- report API
-    def handle_report(self, report: dict, min_confidence: float = 0.5,
+    def handle_report(self, report: dict, ho_threshold: float = 0.35, min_confidence: float = 0.3,
                       a3_hyst_db: float = 3.0, a3_ttt: int = 3) -> dict:
         """xApp entry point for one JSON measurement report.
 
@@ -96,15 +100,21 @@ class HandoverLLM:
                   "serving_rsrp": [5 dBm values, oldest first],
                   "neighbors": [{"cell_id": 7, "rsrp": [5 values]}, ...]}
 
-        If the model is not confident, a conservative A3 rule is applied to the
-        same report (safety fallback), and the answer says so.
+        The decision uses the same rule as the closed-loop policy: hand over to the
+        most likely neighbour when P(handover to it) >= `ho_threshold`. The model
+        then writes the rationale for that decision. If the chosen action's
+        probability is below `min_confidence`, a conservative A3 rule is applied to
+        the same report (safety fallback), and the answer says so.
         """
         obs = report_to_observation(report, self.tok.obs_cfg)
         prompt = self.tok.encode_prompts(obs)
         p_stay, p_ho = self.score(prompt)
-        answer = self.explain_answer(self.generate(prompt[0]))
         k = int(p_ho[0].argmax())
-        conf = float(max(p_stay[0], p_ho[0, k]))
+        if p_ho[0, k] >= ho_threshold:
+            prefix, conf = [self.tok.HO, int(self.tok.cell(obs.nbr_ids[0, k]))], float(p_ho[0, k])
+        else:
+            prefix, conf = [self.tok.STAY], float(p_stay[0])
+        answer = self.explain_answer(self.generate(prompt[0], prefix=prefix))
         answer.update(confidence=round(conf, 4), p_stay=round(float(p_stay[0]), 4),
                       p_handover={int(c): round(float(p), 4) for c, p in zip(obs.nbr_ids[0], p_ho[0])},
                       source="llm")

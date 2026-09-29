@@ -39,12 +39,16 @@ def main(argv=None):
     i = sub.add_parser("infer", help="decide for one JSON measurement report")
     i.add_argument("report", help="path to a JSON report, or '-' for the built-in example")
     i.add_argument("--ckpt", default="checkpoints/handover_llm.pt")
+    i.add_argument("--ho-threshold", type=float, default=0.35)
 
     s = sub.add_parser("serve", help="HTTP endpoint for a near-RT RIC xApp")
     s.add_argument("--ckpt", default="checkpoints/handover_llm.pt")
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--port", type=int, default=8080)
-    s.add_argument("--min-confidence", type=float, default=0.5)
+    s.add_argument("--ho-threshold", type=float, default=0.35,
+                   help="hand over when P(handover to best neighbour) >= this")
+    s.add_argument("--min-confidence", type=float, default=0.3,
+                   help="below this, the A3 fallback decides instead of the model")
 
     x = sub.add_parser("export-jsonl", help="export chat-format data to fine-tune a general LLM")
     x.add_argument("--data", default="data/handover_corpus.npz")
@@ -81,11 +85,11 @@ def main(argv=None):
     elif a.cmd == "infer":
         from .inference import HandoverLLM
         report = EXAMPLE_REPORT if a.report == "-" else json.load(open(a.report))
-        print(json.dumps(HandoverLLM.load(a.ckpt).handle_report(report), indent=2))
+        print(json.dumps(HandoverLLM.load(a.ckpt).handle_report(report, a.ho_threshold), indent=2))
 
     elif a.cmd == "serve":
         from .serve import serve
-        serve(a.ckpt, a.host, a.port, a.min_confidence)
+        serve(a.ckpt, a.host, a.port, a.ho_threshold, a.min_confidence)
 
     elif a.cmd == "export-jsonl":
         from .dataset import export_jsonl

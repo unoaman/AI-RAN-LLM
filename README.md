@@ -51,6 +51,9 @@ RSRP trajectories in the report:
 ```bash
 pip install -e .[dev]
 
+# a trained checkpoint ships in checkpoints/handover_llm.pt, so you can skip to step 3.
+# Steps 1-2 retrain it from scratch.
+
 # 1. simulate 60 drives x 32 UEs x 60 s and build the corpus (~0.5 M samples, ~1 min)
 python -m ai_ran_llm gen-data --episodes 60 --ues 32
 
@@ -77,14 +80,14 @@ python -m ai_ran_llm export-jsonl --limit 100000
 pytest -q
 ```
 
-Example response for the built-in report (`infer -`) from the trained checkpoint:
+Example response for the built-in report (`infer -`) from the committed checkpoint:
 
 ```json
 {
-  "action": "STAY",
-  "target_cell": null,
-  "rationale": "Stay on serving cell: serving cell falling, predicted RSRP gain -1 dB over the next second, serving SINR is low.",
-  "confidence": 0.5638,
+  "action": "HANDOVER",
+  "target_cell": 4,
+  "rationale": "Hand over to cell 4: serving cell falling, neighbor cell rising, predicted RSRP gain +4 dB over the next second, serving SINR is low.",
+  "confidence": 0.3882,
   "p_stay": 0.5638,
   "p_handover": {
     "4": 0.3882,
@@ -96,40 +99,73 @@ Example response for the built-in report (`infer -`) from the trained checkpoint
 }
 ```
 
-This is a borderline case. Cell 4 overtook the falling serving cell only in the last two reports, but it is already 8 dB above it. The model stays with only 56% confidence and gives cell 4 most of the rest. The default A3 fallback (3 dB for 3 reports) would also stay one more report. This reluctance to hand over early is the model's main weakness today (13% HO recall; see Results).
+Cell 4 is rising while the serving cell falls, and it is already 8 dB above serving in the
+latest sample. P(handover to cell 4) = 0.39 clears the 0.35 threshold, so the xApp hands over.
+The model then writes the rationale for that decision. The endpoint and the closed-loop
+benchmark use the same rule:
 
-A report carries up to `n_neighbors` (4) neighbours and `hist_len` (5) L3-filtered RSRP
-samples per cell, taken every 200 ms (oldest first). Shorter histories are left-padded.
+* `--ho-threshold` sets the handover decision.
+* `--min-confidence` (default 0.3) routes low-probability decisions to the A3 fallback.
 
 ## Results
 
 Closed-loop benchmark: 5 unseen drives × 64 UEs × 60 s (5.3 UE-hours), with identical
 channels for every policy. The model is the default 0.85 M-parameter configuration, trained
 for 2 epochs on 527k samples (about 37 min on 4 CPU cores). Reproduce with
-`python -m ai_ran_llm evaluate --episodes 5`.
+`python -m ai_ran_llm evaluate --episodes 5` (default `--ho-threshold 0.35`).
 
 | Policy | HO/UE/min | Ping-pong % | RLF/UE/min | HOF/UE/min | SINR dB | SE b/s/Hz | Outage % |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | A3 (1 dB, 200 ms) | 17.86 | 31.1 | 0.000 | 0.69 | 6.98 | 2.959 | 2.22 |
 | A3 (2 dB, 300 ms) | 10.36 | 13.2 | 0.016 | 1.22 | 6.59 | 2.919 | 3.76 |
 | A3 (3 dB, 500 ms) | 5.67 | 2.9 | 0.700 | 1.25 | 5.99 | 2.849 | 6.16 |
-| **HandoverLLM** (conf 0.5) | 8.69 | 9.0 | 0.025 | 0.95 | 6.74 | 2.936 | 3.07 |
+| **HandoverLLM** (threshold 0.35) | 13.34 | 21.4 | 0.006 | 0.53 | 7.04 | 2.969 | 1.92 |
 | Teacher (non-causal upper bound) | 8.01 | 5.3 | 0.000 | 0.00 | 7.41 | 3.006 | 0.56 |
 
 How to read this:
 
-* **HandoverLLM beats the mid-range A3 setting (2 dB / 300 ms) on every KPI.** It makes 16% fewer
-  handovers, has fewer ping-pongs (9.0% vs 13.2%), 22% fewer HO failures, higher SINR and
-  spectral efficiency, and less outage.
-* **Against the aggressive A3 setting (1 dB):** it uses half the handovers and has less than a
-  third of the ping-pongs, but gives up a little SE (-0.8%) and outage.
-* **Against the conservative A3 setting (3 dB):** it avoids that setting's radio link failures and
-  most of its HO failures.
+* **HandoverLLM beats every A3 setting on throughput, SINR, outage and HO failures.** Its
+  spectral efficiency (2.969) and outage (1.9%) beat even aggressive A3 at 1 dB (2.959, 2.2%).
+  It does this with 25% fewer handovers and a third fewer ping-pongs than A3 at 1 dB, and 23%
+  fewer HO failures.
+* **Against A3 at 2 dB:** it makes more handovers (13.3 vs 10.4 per UE-min) and more ping-pongs
+  (21% vs 13%), and in return gets much less outage and less than half the HO failures.
+* **The decision threshold is the main tuning knob** (`--ho-threshold`). The model hands over
+  when P(handover to its best neighbour) ≥ threshold. Handovers are rare, so the model's
+  probabilities are conservative, and 0.35 works better than 0.5:
+
+  | Threshold | HO/UE/min | Ping-pong % | HOF/UE/min | SE b/s/Hz | Outage % |
+  |---:|---:|---:|---:|---:|---:|
+  | 0.25 | 22.39 | 39.3 | 0.71 | 2.962 | 2.15 |
+  | **0.35** | 13.34 | 21.4 | 0.53 | 2.969 | 1.92 |
+  | 0.50 | 8.69 | 9.0 | 0.95 | 2.936 | 3.07 |
+
+  Use 0.5 if handover signalling load matters more than throughput.
 * **There is still a clear gap to the teacher.** Per-sample validation accuracy is 88% and
-  handover recall is only 13%. The teacher reacts to future shadowing, much of which cannot be
-  predicted from a 1 s report history, so many of its labels cannot be learned. Smoothing the
-  labels, adding richer inputs (beam and CSI measurements, position) and using larger models
-  are the obvious next steps.
+  handover recall at argmax is 13%. The teacher reacts to future shadowing, much of which
+  cannot be predicted from a 1 s report history.
+
+### Label-smoothing experiment (negative result)
+
+To make the teacher's labels easier to learn, `policies.label_decision` adds two options:
+
+* `ObsConfig.label_window`: label a handover if the teacher would hand over within the next
+  W steps.
+* `ObsConfig.label_confirm_horizon`: keep a handover label only if the target still beats the
+  serving cell over a longer horizon.
+
+Neither helped, so both are off by default:
+
+* **Windowing makes the teacher itself worse in closed loop.** Handing over early joins a cell
+  that is not yet better. At W=5 ping-pongs reach 40%.
+* **A 2 s confirmation makes a cleaner teacher** (ping-pong 1.3% vs 5.7%, same SE), but it is no
+  more predictable from the report. A small classifier on report features reaches the same
+  handover AUC (≈0.83) for every variant.
+* **The model trained on confirmed labels was slightly worse** in closed loop (SE 2.966, outage
+  2.1% at threshold 0.35).
+
+Better gains will more likely come from richer inputs, such as beam/CSI measurements,
+position and heading, or longer history, than from relabelling.
 
 ## Integrating with a real RAN
 

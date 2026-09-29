@@ -1,5 +1,6 @@
 data/
-checkpoints/
+checkpoints/*
+!checkpoints/handover_llm.pt
 __pycache__/
 *.pyc
 *.egg-info/

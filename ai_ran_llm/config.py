@@ -38,8 +38,9 @@ class ObsConfig:
     oracle_horizon: int = 10       # teacher looks 1 s into the future
     oracle_margin_db: float = 2.0
     # training-label smoothing (see policies.label_decision)
+    # Both default to off: in our tests neither made labels more learnable (see README).
     label_window: int = 0           # HO label if the teacher would hand over within this many steps
-    label_confirm_horizon: int = 20 # ...and the target still beats serving on average over 2 s
+    label_confirm_horizon: int = 0  # ...and the target still beats serving on average over this many steps
 
 
 @dataclass
