@@ -16,6 +16,11 @@ def main(argv=None):
     g.add_argument("--steps", type=int, default=600)
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--out", default="data/handover_corpus.npz")
+    g.add_argument("--from-drives", nargs="+", metavar="NPZ",
+                   help="build the corpus from these drive files (real traces or export-raw output) "
+                        "instead of simulating; see README 'Using real network data'")
+    g.add_argument("--serving", choices=["logged", "replay"], default="logged",
+                   help="with --from-drives: use the logged serving cells, or replay simulated policies")
 
     t = sub.add_parser("train", help="train HandoverGPT")
     t.add_argument("--data", default="data/handover_corpus.npz")
@@ -67,7 +72,8 @@ def main(argv=None):
 
     if a.cmd == "gen-data":
         from .dataset import generate_dataset
-        d = generate_dataset(a.episodes, a.ues, a.steps, a.seed)
+        d = generate_dataset(a.episodes, a.ues, a.steps, a.seed,
+                             drives=sorted(a.from_drives) if a.from_drives else None, serving=a.serving)
         os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
         np.savez_compressed(a.out, **d)
         print(f"wrote {len(d['tokens'])} samples to {a.out}")

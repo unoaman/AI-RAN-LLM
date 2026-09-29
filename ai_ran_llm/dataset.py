@@ -9,7 +9,8 @@ import numpy as np
 
 from .config import ObsConfig, SimConfig
 from .policies import A3Policy, OraclePolicy, label_decision
-from .simulator import Observation, generate_episode, run_policy, save_episode
+from .simulator import (Episode, Observation, build_observation, generate_episode, load_episode,
+                        run_policy, save_episode)
 from .tokenizer import HandoverTokenizer
 
 
@@ -25,6 +26,8 @@ def _behaviour_policy(rng: np.random.Generator, obs_cfg: ObsConfig):
 
 
 def describe_policy(policy) -> str:
+    if policy is None:
+        return "logged serving cells"
     if isinstance(policy, A3Policy):
         return f"A3(hyst={policy.hyst_db:.2f} dB, ttt={policy.ttt_steps} steps)"
     if policy.exec_prob < 1.0:
@@ -44,40 +47,80 @@ class LabelledStep:
     keep: np.ndarray       # (U,) bool, sample included in the corpus
 
 
-def iter_labelled_drives(n_episodes: int, n_ue: int, n_steps: int, rng: np.random.Generator,
-                         sim: SimConfig, obs_cfg: ObsConfig, easy_keep_prob: float = 0.1):
-    """Simulate drives and label every report. Yields (episode index, Episode,
-    behaviour policy, serving-cell trajectory (U, T), [LabelledStep, ...]).
-
-    Both `generate_dataset` and `export_raw` consume this, with the same random
-    stream, so a raw export with the same seed contains exactly the drives behind
-    the corpus. Samples where every neighbour is >6 dB below the serving cell are
-    trivially STAY; only `easy_keep_prob` of them are kept.
-    """
+def _label_steps(ep: Episode, seen, rng: np.random.Generator, obs_cfg: ObsConfig,
+                 easy_keep_prob: float) -> list[LabelledStep]:
     lookahead = max(obs_cfg.oracle_horizon + obs_cfg.label_window, obs_cfg.label_confirm_horizon)
-    for e in range(n_episodes):
-        ep = generate_episode(n_ue, n_steps, rng, sim)
-        policy = _behaviour_policy(rng, obs_cfg)
-        _, traj, seen = run_policy(ep, policy, obs_cfg, record=True)
-        steps = []
-        for t, obs in seen:
-            if t < obs_cfg.hist_stride * (obs_cfg.hist_len - 1) or t + lookahead >= n_steps:
-                continue
-            target, gain = label_decision(ep, t, obs, obs_cfg)
-            margin = obs.nbr_hist[:, 0, -1] - obs.serving_hist[:, -1]
-            keep = (target >= 0) | (margin > -6.0) | (rng.uniform(size=len(target)) < easy_keep_prob)
-            steps.append(LabelledStep(t, obs, target, gain, keep))
-        yield e, ep, policy, traj, steps
+    steps = []
+    for t, obs in seen:
+        if t < obs_cfg.hist_stride * (obs_cfg.hist_len - 1) or t + lookahead >= ep.n_steps:
+            continue
+        target, gain = label_decision(ep, t, obs, obs_cfg)
+        margin = obs.nbr_hist[:, 0, -1] - obs.serving_hist[:, -1]
+        keep = (target >= 0) | (margin > -6.0) | (rng.uniform(size=len(target)) < easy_keep_prob)
+        steps.append(LabelledStep(t, obs, target, gain, keep))
+    return steps
+
+
+def _logged_reports(ep: Episode, obs_cfg: ObsConfig):
+    """Reports along the serving cells recorded in a trace (no policy in the loop)."""
+    seen = []
+    for t in range(ep.n_steps):
+        obs = build_observation(ep, t, ep.logged_serving[:, t], obs_cfg)
+        if ep.logged_sinr_db is not None:
+            obs.sinr_db = ep.logged_sinr_db[:, t].copy()
+        seen.append((t, obs))
+    return seen
+
+
+def iter_labelled_drives(n_episodes: int, n_ue: int, n_steps: int, rng: np.random.Generator,
+                         sim: SimConfig, obs_cfg: ObsConfig, easy_keep_prob: float = 0.1,
+                         drives: list[str] | None = None, serving: str = "logged"):
+    """Label every report of a set of drives. Yields (episode index, Episode,
+    behaviour policy or None, serving-cell trajectory (U, T), [LabelledStep, ...]).
+
+    Without `drives`, it simulates `n_episodes` new drives. Both `generate_dataset`
+    and `export_raw` consume it with the same random stream, so a raw export with
+    the same seed contains exactly the drives behind the corpus.
+
+    With `drives` (paths to .npz files, see `simulator.load_episode`), it labels
+    those instead, e.g. real traces:
+
+    * ``serving="logged"`` (default): use the serving cells recorded in each file
+      (``serving`` array), i.e. the states the real network visited.
+    * ``serving="replay"``: replay the simulated behaviour-policy mix on the file's
+      RSRP, as for simulated drives.
+
+    Samples where every neighbour is >6 dB below the serving cell are trivially
+    STAY; only `easy_keep_prob` of them are kept.
+    """
+    if serving not in ("logged", "replay"):
+        raise ValueError("serving must be 'logged' or 'replay'")
+    sources = drives if drives is not None else [None] * n_episodes
+    for e, path in enumerate(sources):
+        if path is None:
+            ep = generate_episode(n_ue, n_steps, rng, sim)
+        else:
+            ep = load_episode(path, sim)
+        if path is not None and serving == "logged":
+            if ep.logged_serving is None:
+                raise ValueError(f"{path} has no 'serving' array; use serving='replay'")
+            policy, seen = None, _logged_reports(ep, obs_cfg)
+            traj = ep.logged_serving
+        else:
+            policy = _behaviour_policy(rng, obs_cfg)
+            _, traj, seen = run_policy(ep, policy, obs_cfg, record=True)
+        yield e, ep, policy, traj, _label_steps(ep, seen, rng, obs_cfg, easy_keep_prob)
 
 
 def generate_dataset(n_episodes: int, n_ue: int = 32, n_steps: int = 600, seed: int = 0,
                      sim: SimConfig | None = None, obs_cfg: ObsConfig | None = None,
                      block_size: int = 64, easy_keep_prob: float = 0.1,
-                     verbose: bool = True) -> dict:
+                     verbose: bool = True, drives: list[str] | None = None, serving: str = "logged") -> dict:
     """Returns {"tokens": (N, block_size) int64 padded with <pad>, "prompt_len": int}.
 
     Labels come from the look-ahead teacher (`label_decision`); see
-    `iter_labelled_drives` for how reports are produced and subsampled.
+    `iter_labelled_drives` for how reports are produced (simulated, or from the
+    `drives` files) and subsampled.
     """
     sim = sim or SimConfig()
     obs_cfg = obs_cfg or ObsConfig()
@@ -85,7 +128,9 @@ def generate_dataset(n_episodes: int, n_ue: int = 32, n_steps: int = 600, seed: 
     rng = np.random.default_rng(seed)
     rows, n_ho = [], 0
 
-    for e, _, _, _, steps in iter_labelled_drives(n_episodes, n_ue, n_steps, rng, sim, obs_cfg, easy_keep_prob):
+    n_total = len(drives) if drives is not None else n_episodes
+    for e, _, _, _, steps in iter_labelled_drives(n_episodes, n_ue, n_steps, rng, sim, obs_cfg,
+                                                  easy_keep_prob, drives, serving):
         for st in steps:
             obs = st.obs
             prompts = tok.encode_prompts(obs)
@@ -98,8 +143,10 @@ def generate_dataset(n_episodes: int, n_ue: int = 32, n_steps: int = 600, seed: 
                 rows.append(row)
                 n_ho += int(st.target[u] >= 0)
         if verbose:
-            print(f"episode {e + 1}/{n_episodes}: {len(rows)} samples ({n_ho} handovers)", flush=True)
+            print(f"episode {e + 1}/{n_total}: {len(rows)} samples ({n_ho} handovers)", flush=True)
 
+    if not rows:
+        raise ValueError("no samples: drives are shorter than the report history + teacher look-ahead")
     tokens = np.stack(rows)
     rng.shuffle(tokens)
     return {"tokens": tokens, "prompt_len": np.int64(tok.prompt_len)}
@@ -118,8 +165,9 @@ def export_raw(out_dir: str, n_episodes: int = 1, n_ue: int = 32, n_steps: int =
     * ``drive_XXX.npz``: per-step channel of the drive (float32). ``pos`` (U,T,2) m,
       ``speed_kmh`` (U,), ``rsrp_true`` / ``rsrp_inst`` / ``rsrp_meas`` (U,T,C) dBm
       (large-scale, with fast fading, L3-filtered measurement), ``serving`` (U,T)
-      and ``sinr_db`` (U,T) under the behaviour policy. Load it with
-      :func:`ai_ran_llm.simulator.load_episode`.
+      and ``sinr_db`` (U,T): serving cell and SINR at each report under the
+      behaviour policy. Load it with :func:`ai_ran_llm.simulator.load_episode`;
+      it is also the template for real traces (``gen-data --from-drives``).
     * ``reports.jsonl.gz``: one measurement report per UE per labelled step, in
       the xApp request format (``serving_rsrp``, ``neighbors[].rsrp``, ...) with
       unrounded values, plus the teacher ``label`` and ``in_corpus``.
@@ -142,7 +190,7 @@ def export_raw(out_dir: str, n_episodes: int = 1, n_ue: int = 32, n_steps: int =
                     c.write("cell_id,x_m,y_m\n")
                     for i, (x, y) in enumerate(ep.sites):
                         c.write(f"{i},{x:.1f},{y:.1f}\n")
-            sinr = np.stack([ep.sinr_db(t, traj[:, t]) for t in range(ep.n_steps)], axis=1)
+            sinr = np.stack([ep.sinr_db(t, traj[:, t]) for t in range(ep.n_steps)], axis=1)   # as in the reports
             save_episode(os.path.join(out_dir, f"drive_{e:03d}.npz"), ep, serving=traj, sinr_db=sinr)
             manifest["drives"].append({"episode": e, "file": f"drive_{e:03d}.npz",
                                        "behaviour_policy": describe_policy(policy)})

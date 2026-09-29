@@ -127,6 +127,32 @@ def test_export_raw_matches_corpus(tmp_path):
     assert obs.nbr_ids.shape == (1, 4)
 
 
+def test_corpus_from_drive_files(tmp_path):
+    import pytest
+    export_raw(str(tmp_path), n_episodes=1, n_ue=6, n_steps=120, seed=9, verbose=False)
+    ref = generate_dataset(1, n_ue=6, n_steps=120, seed=9, verbose=False)["tokens"]
+    got = generate_dataset(0, drives=[str(tmp_path / "drive_000.npz")], seed=9, verbose=False)["tokens"]
+    tok, P = HandoverTokenizer(), 41
+    # logged serving cells reproduce every handover label of the original drive
+    assert sorted(map(bytes, ref[ref[:, P] == tok.HO])) == sorted(map(bytes, got[got[:, P] == tok.HO]))
+
+    # a minimal "real trace": only measured RSRP (NaN = not measured) and logged serving cells
+    ep = generate_episode(3, 100, np.random.default_rng(1))
+    meas = ep.rsrp_meas.copy()
+    meas[meas < -115] = np.nan
+    serving = np.nanargmax(meas, axis=2)
+    np.savez(tmp_path / "trace.npz", rsrp_meas=meas, serving=serving)
+    loaded = load_episode(str(tmp_path / "trace.npz"))
+    assert np.isfinite(loaded.rsrp_meas).all() and loaded.logged_serving.shape == (3, 100)
+    d = generate_dataset(0, drives=[str(tmp_path / "trace.npz")], verbose=False)
+    assert len(d["tokens"]) > 0
+    np.savez(tmp_path / "no_serving.npz", rsrp_meas=meas)
+    with pytest.raises(ValueError, match="serving"):
+        generate_dataset(0, drives=[str(tmp_path / "no_serving.npz")], verbose=False)
+    assert len(generate_dataset(0, drives=[str(tmp_path / "no_serving.npz")], serving="replay",
+                                verbose=False)["tokens"]) > 0
+
+
 def test_loss_masking_and_training_step():
     tok = HandoverTokenizer()
     d = generate_dataset(1, n_ue=6, n_steps=100, seed=2, verbose=False)

@@ -36,6 +36,9 @@ class Episode:
     rsrp_inst: np.ndarray    # (U, T, C) with fast fading, drives SINR
     rsrp_meas: np.ndarray    # (U, T, C) L3-filtered UE measurements (what policies see)
     sim: SimConfig = field(repr=False)
+    # Optional, from logged traces: serving cell and SINR at each report (U, T)
+    logged_serving: np.ndarray | None = field(default=None, repr=False)
+    logged_sinr_db: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def n_ue(self) -> int:
@@ -119,19 +122,43 @@ def save_episode(path: str, ep: Episode, **extra) -> None:
                         rsrp_meas=ep.rsrp_meas.astype(np.float32), **extra)
 
 
-def load_episode(path: str, sim: SimConfig | None = None) -> Episode:
-    """Load a drive saved by :func:`save_episode`.
+UNMEASURED_DBM = -160.0    # stands in for NaN (cell not measured) in logged traces
 
-    The same layout can hold real traces (e.g. drive-test or RIC logs resampled
-    to `dt_s`). `rsrp_meas` is what policies see. `rsrp_true` (the teacher's
-    future view) and `rsrp_inst` (SINR) default to `rsrp_meas` if absent.
+
+def load_episode(path: str, sim: SimConfig | None = None) -> Episode:
+    """Load a drive saved by :func:`save_episode`, or a real trace in the same layout.
+
+    Required: ``rsrp_meas`` (U, T, C), the per-UE RSRP of every cell in dBm at
+    `dt_s` (100 ms) steps; NaN = not measured. Cells are indexed 0..C-1
+    (C <= 64); keep your own PCI / NR-CGI mapping alongside.
+
+    Optional:
+
+    * ``rsrp_true``: what the teacher uses to look ahead (defaults to ``rsrp_meas``).
+    * ``rsrp_inst``: used for SINR (defaults to ``rsrp_meas``).
+    * ``speed_kmh`` (U,), ``pos`` (U, T, 2) and ``sites`` (C, 2).
+    * ``serving`` and ``sinr_db`` (U, T): the serving cell and its SINR at each
+      report, as logged by the network. With ``serving``, a corpus can be built
+      from the states the real network actually visited.
     """
+    from .tokenizer import MAX_CELLS
+
     d = np.load(path)
-    meas = d["rsrp_meas"].astype(np.float64)
-    get = lambda k, default: d[k].astype(np.float64) if k in d else default
-    return Episode(sites=get("sites", np.zeros((meas.shape[2], 2))), pos=get("pos", np.zeros(meas.shape[:2] + (2,))),
-                   speed_kmh=get("speed_kmh", np.zeros(meas.shape[0])), rsrp_true=get("rsrp_true", meas),
-                   rsrp_inst=get("rsrp_inst", meas), rsrp_meas=meas, sim=sim or SimConfig())
+    get = lambda k: np.nan_to_num(d[k].astype(np.float64), nan=UNMEASURED_DBM) if k in d else None
+    meas = get("rsrp_meas")
+    U, T, C = meas.shape
+    if C > MAX_CELLS:
+        raise ValueError(f"{path}: {C} cells, the tokenizer supports at most {MAX_CELLS}")
+    serving = d["serving"].astype(np.int64) if "serving" in d else None
+    if serving is not None and (serving.shape != (U, T) or serving.min() < 0 or serving.max() >= C):
+        raise ValueError(f"{path}: 'serving' must be (U, T) cell indices in [0, {C})")
+    true, inst = get("rsrp_true"), get("rsrp_inst")
+    return Episode(sites=d["sites"].astype(np.float64) if "sites" in d else np.zeros((C, 2)),
+                   pos=d["pos"].astype(np.float64) if "pos" in d else np.zeros((U, T, 2)),
+                   speed_kmh=d["speed_kmh"].astype(np.float64) if "speed_kmh" in d else np.zeros(U),
+                   rsrp_true=meas if true is None else true, rsrp_inst=meas if inst is None else inst,
+                   rsrp_meas=meas, sim=sim or SimConfig(), logged_serving=serving,
+                   logged_sinr_db=d["sinr_db"].astype(np.float64) if "sinr_db" in d else None)
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +237,8 @@ def run_policy(ep: Episode, policy, obs_cfg: ObsConfig, record: bool = False):
     """Replay `ep` with `policy` controlling handovers.
 
     `policy.decide(ep, t, obs)` returns an int array (U,) with the target cell or
-    -1 to stay. Returns (Metrics, serving trajectory (U, T)) and, if `record`,
+    -1 to stay. Returns (Metrics, serving trajectory (U, T): the serving cell when
+    each step's report was taken, before that step's decision) and, if `record`,
     also the list of (t, Observation) pairs seen by the policy.
     """
     sim = ep.sim
@@ -245,6 +273,7 @@ def run_policy(ep: Episode, policy, obs_cfg: ObsConfig, record: bool = False):
             oos[rlf] = 0
 
         obs = build_observation(ep, t, serving, obs_cfg)
+        traj[:, t] = serving
         if record:
             seen.append((t, obs))
         target = np.asarray(policy.decide(ep, t, obs))
@@ -271,6 +300,5 @@ def run_policy(ep: Episode, policy, obs_cfg: ObsConfig, record: bool = False):
         m.se_sum += float(se.sum())
         m.outage_steps += int(((blocked_until > t) | (sinr < sim.q_out_db)).sum())
         m.samples += U
-        traj[:, t] = serving
 
     return (m, traj, seen) if record else (m, traj)

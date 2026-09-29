@@ -77,7 +77,7 @@ so these are exactly the drives the corpus came from.
 | File | Contents |
 |---|---|
 | `reports.jsonl.gz` | 18,624 measurement reports (every UE, every labelled step) with unrounded values, in the **same JSON format the xApp endpoint accepts**. Each report includes the teacher's `label` and `in_corpus` (whether it was kept in the corpus). The 8,641 reports marked `in_corpus` are exactly this drive's samples in `handover_corpus.npz`. |
-| `drive_000.npz` | The full channel of the drive (float32). `pos` (U,T,2) is UE position in m. `speed_kmh` (U,). `rsrp_true` (U,T,C) is large-scale RSRP, the teacher's view. `rsrp_inst` (U,T,C) adds fast fading and drives SINR. `rsrp_meas` (U,T,C) is the L3-filtered UE measurement, which is what the reports contain. `serving` and `sinr_db` (U,T) are under the behaviour policy. `sites` (C,2). |
+| `drive_000.npz` | The full channel of the drive (float32). `pos` (U,T,2) is UE position in m. `speed_kmh` (U,). `rsrp_true` (U,T,C) is large-scale RSRP, the teacher's view. `rsrp_inst` (U,T,C) adds fast fading and drives SINR. `rsrp_meas` (U,T,C) is the L3-filtered UE measurement, which is what the reports contain. `serving` and `sinr_db` (U,T) are the serving cell and its SINR at each report, under the behaviour policy. `sites` (C,2). |
 | `drives.json` | Seed, simulator and report configuration, and the behaviour policy of each drive. |
 | `cells.csv` | Cell id and site coordinates (m). |
 
@@ -116,14 +116,56 @@ general-purpose LLM, `export-jsonl` writes the corpus as chat-format text.
 
 ### Using real network data
 
-`load_episode` accepts the same `.npz` layout filled with real traces: RSRP per UE and cell
-(`rsrp_meas`, resampled to 100 ms). `rsrp_true` and `rsrp_inst` default to the measured values
-if missing. On such an Episode you can:
+`gen-data --from-drives` builds a corpus from drive files instead of simulating. The files can
+be real traces (drive tests, RIC/E2 KPM logs, MDT) or `export-raw` output. Each file is one
+`.npz` with these arrays:
 
-* compute teacher labels offline with `policies.label_decision`, since the future is known in a log;
-* replay A3 or the model with `simulator.run_policy`.
+| Array | Shape | Required | Meaning |
+|---|---|---|---|
+| `rsrp_meas` | (U, T, C) | **yes** | L3-filtered RSRP (dBm) of every cell for every UE, one row per 100 ms step. `NaN` means not measured. |
+| `serving` | (U, T) | for `--serving logged` | Serving cell index at each report. |
+| `sinr_db` | (U, T) | no | Serving SINR at each report. If absent, it is estimated from RSRP. |
+| `rsrp_true` | (U, T, C) | no | What the teacher uses to look 1 s ahead. Defaults to `rsrp_meas`. |
+| `rsrp_inst` | (U, T, C) | no | Used to compute SINR. Defaults to `rsrp_meas`. |
+| `speed_kmh`, `pos`, `sites` | (U,), (U,T,2), (C,2) | no | UE speed, UE position, cell site positions. |
 
-Building a corpus from real traces is not wired into the CLI yet.
+Cells are indexed `0..C-1` with C ≤ 64. Keep your own index → PCI / NR-CGI mapping.
+`data/raw/drive_000.npz` is a complete example of the layout.
+
+```bash
+# build a corpus from traces, using the serving cells the network actually used
+python -m ai_ran_llm gen-data --from-drives traces/*.npz --out data/my_corpus.npz
+
+# or replay the simulated behaviour policies (teacher / delayed teacher / random A3) on the traces' RSRP
+python -m ai_ran_llm gen-data --from-drives traces/*.npz --serving replay --out data/my_corpus.npz
+
+python -m ai_ran_llm train --data data/my_corpus.npz --out checkpoints/my_model.pt
+```
+
+How it works:
+
+* **Labels still come from the look-ahead teacher.** In a log the future is known, so each
+  report is labelled with the best reported neighbour over the following 1 s.
+* **`--serving logged` (default)** uses the states your network actually visited. This is the
+  most realistic option, but it only covers situations your current handover settings produced.
+* **`--serving replay`** needs no `serving` array. It explores more states: late, early and
+  missed handovers.
+
+This path was checked end to end. Rebuilding a corpus from `data/raw/drive_000.npz` with its
+logged serving cells reproduces all 569 handover labels and all 7,099 non-trivial samples of
+drive 0 bit-for-bit. Only the random 10% subsample of trivial STAY reports differs.
+
+A few things to watch for with real data:
+
+* **Report timing:** resample to the model's report timing, 100 ms steps with 5 readings 200 ms
+  apart. Otherwise, retrain with an `ObsConfig` that matches your reporting.
+* **Large-scale RSRP:** with only measured RSRP, the teacher's view includes measurement noise.
+  If you can, provide a smoothed `rsrp_true`.
+* **Real SINR:** interference in real networks differs from the simulator, so pass logged
+  `sinr_db` if you have it.
+* **Evaluation:** `evaluate` still benchmarks on simulated drives. You can replay policies on a
+  trace with `load_episode` + `run_policy`, but the handover outcomes (RLF, HOF) then come from
+  the simulator's radio model applied to your RSRP.
 
 ## Components
 
@@ -173,6 +215,9 @@ python -m ai_ran_llm export-jsonl --limit 100000
 
 # 7. optional: export raw drives + readable measurement reports (see Training data)
 python -m ai_ran_llm export-raw --episodes 1 --out data/raw
+
+# 8. optional: build a corpus from your own traces (see Using real network data)
+python -m ai_ran_llm gen-data --from-drives traces/*.npz --out data/my_corpus.npz
 
 pytest -q
 ```
@@ -271,9 +316,9 @@ position and heading, or longer history, than from relabelling.
   positioning).
 * **Outputs** map to an E2SM-RC control message (handover to the target PCI/NR-CGI). You
   can also use them in "advisory" mode, tuning CIO or hysteresis per cell pair.
-* **Before a live deployment**, retrain on your own traces. You can replay drive-test or
-  RIC logs through `label_decision` via `load_episode` (see *Using real network data*),
-  because the future RSRP is known offline. Tune
+* **Before a live deployment**, retrain on your own traces with
+  `gen-data --from-drives` (see *Using real network data*). The teacher can label logs
+  offline because the future RSRP is known. Tune
   `ObsConfig` to your reporting interval and neighbour list size. Keep the confidence gate
   and A3 fallback enabled.
 
