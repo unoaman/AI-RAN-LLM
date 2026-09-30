@@ -1,0 +1,8 @@
+{
+  "_comment": "OAI behind FlexRIC: two DUs under one CU (F1 handover) as in OAI doc/handover-tutorial.md. 'e2_node_id' is the string the FlexRIC bridge xApp uses for the E2 node (docs/RAN_INTEGRATION.md §9.4); take PLMN / nb_id from the E2 Setup that nearRT-RIC logs. Replace PCIs and NR cell ids with the values of your DU configs; the target NR-CGI of a handover is plmn + nci.",
+  "plmn": "00101",
+  "cells": [
+    {"index": 0, "pci": 0, "nci": "0x12345678", "gnb": "oai-cu", "e2_node_id": "001-01/3584", "neighbours": [1]},
+    {"index": 1, "pci": 1, "nci": "0x11111111", "gnb": "oai-cu", "e2_node_id": "001-01/3584", "neighbours": [0]}
+  ]
+}

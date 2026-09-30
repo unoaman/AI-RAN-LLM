@@ -186,7 +186,7 @@ Re-run (skips existing outputs): `PYTHONPATH=. python experiments/location_close
    (radial speed is noisy today, about ±14 m/s at 10 m error).
 4. **Model:** a ping-pong-aware training label; iterative DAgger; RL fine-tuning; more
    data for the city models.
-5. **Real network:** shadow-mode trial on OCUDU / OAI (`docs/RAN_INTEGRATION.md` §10);
+5. **Real network:** shadow-mode trial on OCUDU / OAI (`docs/RAN_INTEGRATION.md` §11; FlexRIC: §9);
    retrain on real traces (`gen-data --from-drives`).
 6. **Housekeeping:** open a PR when ready (none exists yet); pass `ObsConfig` explicitly through
    the CLI for non-default report shapes.

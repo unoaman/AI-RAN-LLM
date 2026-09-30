@@ -200,7 +200,7 @@ A few things to watch for with real data:
 | `ai_ran_llm/city.py` | Opt-in "city" model for the simulator: road-network mobility with popular, repeated routes and stops, and location-tied (spatial) shadowing shared by all UEs and drives. `--mobility roads --shadowing spatial`. Defaults keep the original simulator bit-for-bit. |
 | `ai_ran_llm/location.py` | Optional location context for the model: position track, radio map, handover-sequence mining (Location xApp logic), `LocationAwarePolicy`. Enabled with `gen-data --use-position --use-radio-map --use-trajectory`. |
 | `experiments/` | Location / radio-map / trajectory learnability studies (`docs/LOCATION_AWARE_HANDOVER.md`). |
-| `integrations/` | Example cell maps and RAN configs for OCUDU/srsRAN and OAI, the O-RAN SC RIC xApp, and a RAN-side bridge agent template. |
+| `integrations/` | Example cell maps and RAN configs for OCUDU/srsRAN, OAI and FlexRIC, the O-RAN SC RIC xApp, and a RAN-side bridge agent template. |
 
 ## Quick start
 
@@ -367,7 +367,8 @@ gNB (OCUDU / srsRAN / OAI)                          HandoverLLM xApp (python -m 
     (`integrations/oran-sc-ric/`).
   * **OAI telnet:** `ci trigger_f1_ho` / `ci trigger_n2_ho`.
   * **srsRAN/OCUDU console:** `ho`.
-  * Any command (e.g. FlexRIC's `xapp_rc_handover`), or the bridge.
+  * **E2SM-RC through FlexRIC** (OAI's near-RT RIC), via a small bridge xApp; see below.
+  * Any command, or the bridge.
 * **Safety:**
   * Shadow mode by default (`--live` to actuate); every decision goes to a JSONL audit log.
   * Guard rails: pending command, failure backoff, hold-off, neighbour relation table,
@@ -392,6 +393,54 @@ Measured on the benchmark drives through the fake gNB (details and more settings
 | Real-RAN path, defaults (A3 override 6 dB) | 13.35 | 21.4 | 0.003 | 0.53 | 2.969 | 1.92 |
 | Real-RAN path, defaults, realistic reports (200 ms, 8 nbrs, RRC-quantised) | 11.03 | 16.4 | 0.016 | 0.85 | 2.944 | 2.79 |
 | Real-RAN path, `--confirm 2` | 8.21 | 8.4 | 0.034 | 1.18 | 2.919 | 3.70 |
+
+### FlexRIC (OAI's near-RT RIC)
+
+Use [FlexRIC](https://gitlab.eurecom.fr/mosaic5g/flexric) for a standard **E2** path to an OAI
+gNB. The full step-by-step guide is in [`docs/RAN_INTEGRATION.md` §9](docs/RAN_INTEGRATION.md).
+
+```
+OAI gNB (E2 agent) ══E2AP══▶ FlexRIC nearRT-RIC ══▶ llm_bridge xApp (C) ──ran-bridge──▶ ran-xapp (Python)
+   RC REPORT Style 1: copy of each RRC MeasurementReport ─────────────▶ meas_report ─▶ tracker ▶ model ▶ guards
+   RC REPORT Style 5: UE context + neighbour relation table                                        │
+   RC CONTROL Style 3 / Action 1 "Handover Control" (target NR-CGI) ◀── ho_command ◀──────────────┘
+   OAI then runs an F1 handover (cell of the same CU) or an N2 handover (neighbour gNB)
+```
+
+* **What OAI + FlexRIC provide:**
+  * OAI's E2 agent (`./build_oai ... --build-e2`, plus an `e2_agent` block in the gNB config)
+    implements E2SM-RC v1.03.
+  * RC REPORT Style 1 "message copy" includes **MeasurementReport**. Style 5 gives the UE
+    context and the neighbour relation table. CONTROL Style 3 is **handover control**.
+  * E2SM-KPM is not enough on its own: it has no per-UE neighbour RSRP.
+* **What you add:** a thin C xApp, `llm_bridge`, on FlexRIC's SDK. Start from FlexRIC's
+  `xapp_rc_handover.c`. The bridge:
+  * decodes the copied MeasurementReports and sends `meas_report` JSON lines to `ran-xapp`;
+  * turns `ho_command`s into RC Handover Control with the model's target NR-CGI.
+
+  The model, the guard rails and the audit log stay in the unchanged Python `ran-xapp`
+  (`--actuator bridge`).
+* **Why not FlexRIC's stock `xapp_rc_handover`:** it picks its own target (the first other DU
+  or neighbour), so it cannot carry the model's decision. Use it only to prove that E2 handover
+  control works in your lab.
+* **Build notes:**
+  * Build FlexRIC and OAI with the **same `E2AP_VERSION` / `KPM_VERSION`**.
+  * FlexRIC needs gcc-13.
+  * Enable periodic measurement reporting and configure the neighbour list
+    (`integrations/oai/measurement.example.conf`, `integrations/flexric/`).
+
+```bash
+./build/examples/ric/nearRT-RIC                                  # FlexRIC build dir
+./nr-softmodem -O cu.conf ...                                    # OAI with e2_agent { near_ric_ip_addr; sm_dir }
+python -m ai_ran_llm ran-xapp --cells integrations/flexric/cells.example.json \
+    --bridge 127.0.0.1:7000 --actuator bridge                    # shadow mode; add --live later
+./llm_bridge --xapp 127.0.0.1:7000                                # the bridge xApp (docs/RAN_INTEGRATION.md §9.4)
+```
+
+**Status:** the FlexRIC and OAI facts come from their documentation and example xApps. The
+Python side was checked with this cell map and a test client standing in for the bridge. The
+`llm_bridge` xApp itself is a design with a code skeleton (§9.4): it is not in this repository
+and has not been run.
 
 **Status.** The integration code is tested against fakes and the simulator only. OAI/srsRAN
 command syntax and E2 calls follow their documentation and example xApps. It has not been run

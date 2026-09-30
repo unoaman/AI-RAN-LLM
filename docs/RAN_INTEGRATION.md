@@ -1,9 +1,9 @@
-# Integrating HandoverLLM with a real RAN (OCUDU / srsRAN Project, OpenAirInterface)
+# Integrating HandoverLLM with a real RAN (OCUDU / srsRAN Project, OpenAirInterface, FlexRIC)
 
 This guide explains how the HandoverLLM xApp connects to a live 5G RAN: which
 messages it receives, how it parses them, how it decides, how it sends a
-handover back, and the step-by-step setup for **OCUDU / srsRAN Project** and
-**OpenAirInterface (OAI)**. Code lives in `ai_ran_llm/ran/` and `integrations/`.
+handover back, and the step-by-step setup for **OCUDU / srsRAN Project**,
+**OpenAirInterface (OAI)** and the **FlexRIC** near-RT RIC (§9). Code lives in `ai_ran_llm/ran/` and `integrations/`.
 
 > **Read first: what is verified.**
 >
@@ -11,10 +11,13 @@ handover back, and the step-by-step setup for **OCUDU / srsRAN Project** and
 >   the tracker, the controller and guard rails, every actuator against fake endpoints, and the
 >   full network path against a simulator-backed fake gNB. With guard rails off, the network
 >   path reproduces the offline benchmark **exactly**, with identical serving-cell trajectories.
-> * **Based on upstream documentation and code (cited in §11):**
+> * **Based on upstream documentation and code (cited in §12):**
 >   * OAI telnet commands `ci trigger_f1_ho` / `ci trigger_n2_ho` and OAI measurement config keys;
 >   * srsRAN's E2SM-RC handover call `control_handover(...)` in its O-RAN SC RIC xApp framework;
->   * srsRAN / OCUDU mobility config keys and the `ho` console command.
+>   * srsRAN / OCUDU mobility config keys and the `ho` console command;
+>   * FlexRIC build and run steps, OAI's E2SM-RC support (message copy, On Demand, Handover
+>     Control) and the behaviour of FlexRIC's `xapp_rc_handover` (§9).
+> * **Designed but not implemented here:** the FlexRIC bridge xApp (§9.4).
 > * **Not tested here:** a live OCUDU/srsRAN or OAI gNB with real UEs. Log header formats and some
 >   config keys vary between versions. Run in **shadow mode** first and check with `ran-parse`
 >   (§8).
@@ -52,14 +55,15 @@ Measurement paths (choose one or more):
 |---|---|---|---|
 | **RRC log tail** (`--rrc-log`) | OCUDU / srsRAN (RRC JSON), OAI (asn1c XER dumps) | Logging config only | Quickest start; parses the real 3GPP MeasurementReport |
 | **ran-bridge agent** (`--bridge`) | Anything | A small agent that emits JSON lines | Most flexible; see `integrations/bridge-agent/` |
-| E2SM-RC REPORT (message copy) | E2 nodes that support it | RIC xApp forwards reports to the bridge | Not built in; standard E2SM-KPM measurements do not include per-UE neighbour RSRP |
+| E2SM-RC REPORT Style 1 (message copy) | OAI + FlexRIC (§9); other E2 nodes that support it | A RIC xApp forwards reports to the bridge | Bridge xApp designed in §9.4, not in this repo; E2SM-KPM does not include per-UE neighbour RSRP |
 
 Actuation paths:
 
 | Actuator (`--actuator`) | RAN | Mechanism | Use |
 |---|---|---|---|
 | E2SM-RC (`integrations/oran-sc-ric`) | OCUDU / srsRAN (+ any E2SM-RC node) | RIC Control Request, Style 3 "Connected Mode Mobility", Action 1 "Handover Control", target NR-CGI | Production path |
-| `command` | Any | Runs a command per handover (no shell); e.g. srsRAN's `simple_rc_ho_xapp.py` or FlexRIC's `xapp_rc_handover` | Lab E2 without writing an xApp |
+| FlexRIC bridge xApp + `bridge` (§9) | OAI (+ any E2SM-RC node behind FlexRIC) | RC Control Style 3 / Action 1, target NR-CGI, sent by a small C xApp that speaks ran-bridge | E2 path for OAI |
+| `command` | Any | Runs a command per handover (no shell), e.g. a script that takes the target from the command. FlexRIC's stock `xapp_rc_handover` does **not** fit: it picks its own target (§9.1) | Lab |
 | `oai-telnet` | OAI | `ci trigger_f1_ho <cu-ue-id>` / `ci trigger_n2_ho <pci>,<rrc-ue-id>` | Lab |
 | `console` | OCUDU / srsRAN | `ho <serving_pci> <rnti> <target_pci>` into the gnb console via a FIFO | Lab |
 | `bridge` | Your agent | `ho_command` NDJSON | Custom RANs |
@@ -407,9 +411,9 @@ OAI decodes MeasurementReports with asn1c. Options:
   `meas_report` JSON line per report to the xApp. The PCI and RSRP index per cell are already
   decoded there; convert with §3.1. Use `rrc_ue_id` as `ue_id` and put it and the CU UE id in
   `ue_ids`. `integrations/bridge-agent/example_agent.py` shows the protocol side.
-* **E2 / FlexRIC:** a FlexRIC xApp subscribing to E2SM-RC reports can forward measurements to the
-  bridge. OAI recently added E2SM-RC report style 5 (UE context, neighbour relation table) and
-  handover control.
+* **E2 / FlexRIC:** OAI's E2 agent copies MeasurementReports to the RIC (E2SM-RC REPORT Style 1)
+  and serves UE context and the neighbour relation table (Style 5). A FlexRIC bridge xApp
+  forwards them to `ran-xapp` (§9).
 
 ### 8.3 Actuate
 
@@ -419,13 +423,262 @@ OAI decodes MeasurementReports with asn1c. Options:
   * N2 handover (different gNBs): `ci trigger_n2_ho <target-pci>,<rrc-ue-id>`.
   * `--oai-mode auto` picks F1 or N2 from the cell map's `gnb` field. UE ids are listed in
     `nrRRC_stats.log` in the CU's working directory.
-* **E2 via FlexRIC:** OAI + FlexRIC implement E2SM-RC Control Style 3 Handover Control, with the
-  example xApp `xapp_rc_handover`. Use `--actuator command` with a wrapper around it, or port
-  `OranScRicActuator` to FlexRIC's SDK.
+* **E2 via FlexRIC:** OAI + FlexRIC implement E2SM-RC Control Style 3 Handover Control. The
+  example xApp `xapp_rc_handover` chooses its own target, so it cannot carry the model's
+  decision. Use the bridge xApp of §9, which sends the model's target NR-CGI.
 
 ---
 
-## 9. Testing without a RAN
+## 9. FlexRIC (OAI's near-RT RIC)
+
+[FlexRIC](https://gitlab.eurecom.fr/mosaic5g/flexric) (EURECOM / Mosaic5G, mirrored at
+`github.com/duranta-project/flexric`) is the near-RT RIC and xApp SDK that OAI's E2 agent is
+developed against. This section shows how to put HandoverLLM behind it: measurements come in
+over **E2SM-RC**, handovers go out as **E2SM-RC Handover Control**, and the model itself runs
+unchanged in `ran-xapp`.
+
+> **What is verified.** The FlexRIC and OAI facts below come from their documentation and
+> example code (§12): OAI `openair2/E2AP/README.md` and `doc/handover-tutorial.md`, the FlexRIC
+> README, `examples/xApp/c/rc_handover/xapp_rc_handover.c`, and the OAI merge request that added
+> RC "On Demand" and "Handover Control". The **bridge xApp** in §9.4 is a design with a code
+> skeleton. It is **not** in this repository and has not been built or run. The Python side it
+> talks to (`ran-xapp --actuator bridge`) is the tested ran-bridge path (§3.2, §10).
+
+### 9.1 What FlexRIC and OAI provide
+
+| Piece | What it is | Used for |
+|---|---|---|
+| `nearRT-RIC` | The RIC: terminates E2 (SCTP) from E2 nodes and serves xApps | Always |
+| OAI E2 agent (`--build-e2`) | E2 node inside the OAI gNB / CU / DU | Always |
+| **E2SM-RC v1.03** in OAI | REPORT Style 1 "Message copy" (RRC message + UE ID; the copied RRC messages include **MeasurementReport**), Style 4 (RRC state change), Style 5 "On Demand" (UE context, **neighbour relation table**); CONTROL Style 1 (QoS/DRB), **Style 3 "Connected Mode Mobility", Action 1 "Handover Control"** | Measurements in, handovers out |
+| E2SM-KPM v2.03 / v3.00 | Cell and UE KPIs | Monitoring only: KPM does not carry per-UE neighbour RSRP |
+| MAC / RLC / PDCP / GTP SMs | FlexRIC's own statistics models | Optional context |
+| `xapp_rc_moni`, `xapp_kpm_moni` | Example monitoring xApps | Checking the setup |
+| `xapp_rc_handover` | Example handover xApp | Checking that handover control works |
+
+Three facts decide the design:
+
+1. **Handover execution.** On an RC Handover Control request, OAI triggers an **F1** handover if
+   the target is a cell of the same CU and an **N2** handover if it is a neighbour gNB. Xn is not
+   used (upstream notes `xn_x2_established` as hard-coded false).
+2. **UE identity.** The control message must carry the E2SM UE ID the E2 node reported
+   (`GNB_UE_ID_E2SM` with the RAN UE ID). Upstream notes that the xApp has to echo back the UE ID
+   from the indication, so the bridge must store it per UE.
+3. **The stock `xapp_rc_handover` chooses its own target.** It subscribes to RC Style 5 once,
+   takes the first UE, and hands it to the first DU that is not serving it (or the first
+   neighbour NR-CGI), then exits. It has no argument for a target cell. It cannot carry the
+   model's decision, so **`--actuator command` with `xapp_rc_handover` does not work**. Use it
+   only to prove that E2 handover control works in your lab, then use the bridge xApp below.
+
+### 9.2 Architecture
+
+```mermaid
+flowchart LR
+    UE["UE"] -->|"RRC MeasurementReport"| GNB["OAI gNB / CU<br/>E2 agent"]
+    GNB -->|"E2AP / SCTP"| RIC["FlexRIC<br/>nearRT-RIC"]
+    RIC -->|"RC REPORT Style 1<br/>message copy"| BX["llm_bridge xApp (C)<br/>FlexRIC SDK"]
+    RIC -->|"RC REPORT Style 5<br/>UE context, NRT"| BX
+    BX -->|"meas_report<br/>ran-bridge NDJSON / TCP"| PX["ran-xapp (Python)<br/>tracker, model, guard rails"]
+    PX -->|"ho_command"| BX
+    BX -->|"ho_outcome"| PX
+    BX -->|"RC CONTROL Style 3 / Action 1<br/>target NR-CGI"| RIC
+    RIC --> GNB
+    GNB -->|"F1 or N2 handover"| UE
+```
+
+Why two processes:
+
+* The model, tracker, controller, guard rails and audit log stay in Python, unchanged and tested.
+  `ran-xapp --actuator bridge` already does everything above the E2 boundary.
+* The E2 side needs the RC encoding and FlexRIC's C API. At the time of writing, FlexRIC's Python
+  (SWIG) examples cover MAC/RLC/PDCP/GTP monitoring and slicing, and the RC examples are in C.
+  A thin C xApp is the shortest path, and it is the only part you write.
+* The bridge protocol is already the contract for custom RANs (§3.2). The same Python process
+  can serve several bridge xApps or RICs.
+
+### 9.3 Build and run
+
+**1. Dependencies** (FlexRIC needs gcc-13; gcc-11 is not supported):
+
+```bash
+sudo apt install -y gcc-13 g++-13 cpp-13 libsctp-dev cmake-curses-gui libpcre2-dev
+# optional, for FlexRIC's Python xApps: SWIG >= 4.1 and python3-dev
+```
+
+**2. FlexRIC**, built with the **same E2AP and KPM versions** as OAI (mismatches fail at E2 Setup):
+
+```bash
+git clone https://gitlab.eurecom.fr/mosaic5g/flexric && cd flexric
+# use the FlexRIC commit your OAI tree pins (openair2/E2AP/flexric submodule) for RC handover support
+mkdir build && cd build
+cmake -DE2AP_VERSION=E2AP_V2 -DKPM_VERSION=KPM_V3_00 ..     # X = 1,2,3; Y = 2_03, 3_00
+make -j8 && sudo make install          # service models -> /usr/local/lib/flexric, config -> /usr/local/etc/flexric
+```
+
+**3. OAI with the E2 agent:**
+
+```bash
+./build_oai --ninja --gNB --nrUE --build-lib telnetsrv --build-e2 \
+    --cmake-opt -DE2AP_VERSION=E2AP_V2 --cmake-opt -DKPM_VERSION=KPM_V3_00
+```
+
+Add the E2 agent to the CU / gNB config (`integrations/flexric/e2_agent.example.conf`) together
+with the neighbour list and **periodic** measurement configuration from
+`integrations/oai/measurement.example.conf`. Periodic reports matter here: RC "message copy"
+only forwards what the UE sends, and the model expects a regular RSRP history (§5).
+
+```
+e2_agent = {
+  near_ric_ip_addr = "127.0.0.1";
+  sm_dir = "/usr/local/lib/flexric/";
+}
+```
+
+**4. Check each layer before adding the model:**
+
+```bash
+./build/examples/ric/nearRT-RIC                                   # terminal 1 (FlexRIC build dir)
+./nr-softmodem -O cu.conf ...                                     # terminal 2: gNB/CU (+ DUs), E2 Setup must succeed
+XAPP_DURATION=20 ./build/examples/xApp/c/monitor/xapp_rc_moni     # RC indications arrive
+XAPP_DURATION=20 ./build/examples/xApp/c/rc_handover/xapp_rc_handover   # 2-DU lab: one handover happens
+```
+
+**5. Run HandoverLLM behind FlexRIC**, in shadow mode first:
+
+```bash
+python -m ai_ran_llm ran-xapp --cells integrations/flexric/cells.example.json \
+    --bridge 127.0.0.1:7000 --actuator bridge            # shadow mode: decisions only
+./llm_bridge --xapp 127.0.0.1:7000                        # the bridge xApp of §9.4
+# after checking the audit log (§11): add --live to ran-xapp
+```
+
+In shadow mode `ran-xapp` still sends every `decision` to the bridge but no `ho_command`, so the
+RAN's own A3 (kept as a backstop, §8.1) makes all handovers.
+
+The Python side of this step was checked with `integrations/flexric/cells.example.json` and a
+test client in place of `llm_bridge`, sending the §9.4 `meas_report` lines:
+
+* in shadow mode, the client gets `decision`s whose `target_cell` carries `pci`, `nci`, `plmn`
+  and `e2_node_id`;
+* with `--live`, it gets `ho_command`s with the `ue_ids` it sent (`ran_ue_id`, `e2_node`)
+  unchanged, and `target_cell.nci` as an **integer** (e.g. `286331153` = `0x11111111`).
+
+### 9.4 The bridge xApp (`llm_bridge`)
+
+About 300–500 lines of C on the FlexRIC SDK. Start from a copy of
+`examples/xApp/c/rc_handover/xapp_rc_handover.c`, which already has the RC subscription,
+indication callback, F1 Setup decoding and Handover Control encoding. Change it as follows.
+
+**Subscriptions** (per E2 node, kept for the xApp's lifetime; the example unsubscribes after one
+indication):
+
+| Subscription | Event trigger | Purpose |
+|---|---|---|
+| RC REPORT Style 1 "Message copy" | RRC message = UL-DCCH **MeasurementReport**; UE ID | One `meas_report` per UE report |
+| RC REPORT Style 5 "On Demand": UE Context Information, Neighbour Relation Table | Periodically or on new UE | Serving NR-CGI per UE; neighbour NR-CGIs to check the cell map |
+
+**On each Style 1 indication:**
+
+1. Decode the copied RRC message (UPER, `NR_UL_DCCH_Message`) with the asn1c NR RRC types that
+   OAI generates (link against them, or copy the generated code).
+2. From `measResults`, take the serving and neighbour PCIs and the SSB RSRP / RSRQ / SINR
+   **indices**. Convert them with TS 38.133 (§3.1): RSRP `n − 157` dBm, RSRQ `(n − 87)/2` dB,
+   SINR `(n − 47)/2` dB.
+3. If the serving PCI is missing from the report (it is optional), use the serving cell from the
+   Style 5 UE context.
+4. Store the indication's E2SM UE ID for this UE, keyed by `ue_id`.
+5. Send one `meas_report` line (§3.2):
+
+```json
+{"type": "meas_report", "ue_id": "gnb-3584/ran_ue_id=2", "seq": 17, "timestamp_s": 1727600000.12,
+ "serving": {"pci": 0, "nci": "0x12345678", "rsrp_dbm": -98.0, "sinr_db": 4.5},
+ "neighbours": [{"pci": 1, "rsrp_dbm": -95.0}],
+ "ue_ids": {"ran_ue_id": 2, "e2_node": "001-01/3584"}}
+```
+
+`timestamp_s` should be the RIC receive time (monotonic seconds): all guard timers use it (§6).
+
+**On each `ho_command` from `ran-xapp`:**
+
+1. Look up the stored E2SM UE ID for `ue_id`. If it is unknown, reply `ho_outcome` `rejected`.
+2. Build Control Style 3 / Action 1 (`RC_CTRL_STYLE_CONN_MODE_MOBILITY`, `HANDOVER_CONTROL_7_6_4_1`)
+   with the **Target Primary Cell ID** RAN parameter = NR-CGI(`plmn`, `target_cell.nci`) from
+   the command (`plmn` is an MCC+MNC string such as `"00101"`, `nci` an integer). The cell map supplies both. This is the example's `gen_handover_ctrl()` /
+   `fill_target_primary_cell_id()`, with the target taken from the command and not from the NRT.
+3. Send it to the E2 node named by `source_cell.e2_node_id` (or the node that reported the UE).
+4. Reply `ho_outcome`: `failure` / `rejected` if the control is refused. Otherwise it may leave
+   success to be inferred: the next `meas_report` with the target as serving counts as success
+   (§3.2), and no news within `pending_timeout_s` counts as a timeout.
+5. When the UE disappears (RRC release, Style 4 state change), send `ue_release`.
+
+Skeleton (untested; FlexRIC xApp API names as used by its example xApps):
+
+```c
+// llm_bridge.c — HandoverLLM <-> FlexRIC bridge (template, not built in this repository)
+#include "../../../../src/xApp/e42_xapp_api.h"
+#include "../../../../src/sm/rc_sm/ie/rc_data_ie.h"
+// + a tiny TCP/NDJSON client (or link a JSON library) and OAI's asn1c NR RRC headers
+
+static void on_rc_indication(sm_ag_if_rd_t const* rd, global_e2_node_id_t const* node) {
+  // rd->ind.rc.ind: header = UE ID, message = copied RRC message (Style 1) or UE context / NRT (Style 5)
+  // Style 1: uper_decode(&asn_DEF_NR_UL_DCCH_Message, ...) -> measResults -> meas_report JSON
+  // remember ue_id -> ue_id_e2sm_t (cp_ue_id_e2sm) and ue_id -> node
+}
+
+static void on_ho_command(json_t const* cmd) {
+  // ue_id -> ue_id_e2sm_t; plmn + target_cell.nci -> NR-CGI
+  rc_ctrl_req_data_t ctrl = gen_handover_ctrl(&ue_id_e2sm, &nr_cgi);   // adapted from xapp_rc_handover.c
+  control_sm_xapp_api(&node_id, SM_RC_ID, &ctrl);
+  free_rc_ctrl_req_data(&ctrl);
+}
+
+int main(int argc, char* argv[]) {
+  fr_args_t args = init_fr_args(argc, argv);
+  init_xapp_api(&args);
+  e2_node_arr_xapp_t nodes = e2_nodes_xapp_api();
+  for (size_t i = 0; i < nodes.len; ++i) {
+    rc_sub_data_t s1 = gen_rc_sub_style_1_meas_report();    // Message copy: MeasurementReport + UE ID
+    rc_sub_data_t s5 = gen_rc_sub_style_5();                 // UE context + NRT (from the example)
+    report_sm_xapp_api(&nodes.n[i].id, SM_RC_ID, &s1, on_rc_indication);
+    report_sm_xapp_api(&nodes.n[i].id, SM_RC_ID, &s5, on_rc_indication);
+  }
+  bridge_connect(xapp_addr);                  // "hello", then meas_report out / ho_command in
+  bridge_loop(on_ho_command);                 // until SIGINT
+  // rm_report_sm_xapp_api(...) for each handle; while (try_stop_xapp_api() == false) usleep(1000);
+}
+```
+
+**Identifiers.** Choose a stable `ue_id` per UE and E2 node (for example
+`gnb-<nb_id>/ran_ue_id=<n>`). Keep the E2SM UE ID inside the bridge; `ran-xapp` passes `ue_ids`
+through unchanged. Give each cell in `cells.json` the `e2_node_id` string the bridge uses for
+that node (for example `"001-01/3584"`, from the E2 Setup the nearRT-RIC logs). The model's
+cell indices map to PCIs and NCIs exactly as for the other paths (§4).
+
+### 9.5 Other combinations
+
+* **Measurements from FlexRIC, actuation over telnet:** the bridge xApp sends only
+  `meas_report`s, and `ran-xapp --actuator oai-telnet` actuates (§8.3). This helps while RC
+  control is not yet working in your build. Note that F1 `trigger_f1_ho` picks the target DU
+  itself.
+* **Measurements from logs, actuation through FlexRIC:** `ran-xapp --rrc-log` (OAI XER dumps,
+  §8.2) with the bridge xApp handling only `ho_command`s.
+* **No radio:** `fake-gnb` (§10) tests `ran-xapp` over the bridge. FlexRIC's emulated agents
+  (`emu_agent_gnb`, `emu_agent_gnb_cu`, `emu_agent_gnb_du`) test the RIC side of the bridge xApp.
+  Check whether your FlexRIC version's emulators implement RC Style 1 / Style 3.
+* **KPM only:** not enough. E2SM-KPM reports cell and UE KPIs, not per-UE neighbour RSRP.
+
+### 9.6 Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| E2 Setup fails, or the RIC rejects the node | OAI and FlexRIC built with different `E2AP_VERSION` / `KPM_VERSION`; `sm_dir` not pointing at the installed service models |
+| FlexRIC does not compile | gcc older than 13 |
+| RC subscription accepted but no Style 1 indications | UE sends no MeasurementReports: enable periodic reporting and configure the neighbours (§8.1) |
+| Control sent, no handover, no error | Wrong UE ID type (echo the one from the indication); target NR-CGI unknown to the gNB (check the NRT from Style 5 and the neighbour list); target not a CU cell or configured neighbour |
+| Handover goes over N2 where F1 was expected | The target is not a cell of the same CU. OAI chooses F1 or N2 from that |
+| `SKIP unknown_serving_cell` in `ran-xapp` | Serving PCI/NCI in the `meas_report` not in `cells.json` |
+
+## 10. Testing without a RAN
 
 ```bash
 # terminal 1: the xApp, live, actuating over the bridge
@@ -441,7 +694,7 @@ and RRC-quantised values.
 
 ---
 
-## 10. Rollout checklist and troubleshooting
+## 11. Rollout checklist and troubleshooting
 
 1. `ran-parse` shows reports for every UE with all needed `ue_ids`, and every cell resolves in
    the cell map.
@@ -462,13 +715,21 @@ and RRC-quantised values.
 
 ---
 
-## 11. References
+## 12. References
 
 * OAI handover tutorial: `doc/handover-tutorial.md` in openairinterface5g (F1/N2 handover, telnet
   `ci trigger_f1_ho`, `ci trigger_n2_ho <pci>,<rrc-ue-id>`, `nr_measurement_configuration`,
   `nrRRC_stats.log`, FlexRIC `xapp_rc_handover`).
 * OAI E2 agent: E2SM-RC "On Demand" report and "Handover Control" (RC v1.03) merge request in the
-  OAI repository.
+  OAI repository (F1 or N2 handover depending on the target; UE ID echoed from the indication;
+  Xn not used).
+* OAI `openair2/E2AP/README.md`: build with `--build-e2`, `E2AP_VERSION` / `KPM_VERSION`, the
+  `e2_agent` config block, E2SM-RC styles (REPORT 1 message copy incl. MeasurementReport, 4, 5;
+  CONTROL 1, 3), example xApps.
+* FlexRIC: `gitlab.eurecom.fr/mosaic5g/flexric` (mirror `github.com/duranta-project/flexric`),
+  README (gcc-13, build options, install paths, nearRT-RIC, emulated agents, example xApps) and
+  `examples/xApp/c/rc_handover/xapp_rc_handover.c` (RC Style 5 subscription, target selection,
+  `gen_handover_ctrl`, `fill_target_primary_cell_id`).
 * srsRAN `oran-sc-ric`: `xApps/python/simple_rc_ho_xapp.py` and `lib/e2sm_rc_module.py`
   (`control_handover` = `send_control_request_style_3_action_1`, target NR-CGI).
 * srsRAN Project `configs/mobility.yml` (report_configs, A3, periodical, ncells) and the gNB
