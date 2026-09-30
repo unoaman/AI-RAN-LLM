@@ -1,0 +1,92 @@
+{
+  "A3 (1dB, 200ms)": {
+    "ho_per_ue_min": 13.234375,
+    "ping_pong_pct": 28.358913813459267,
+    "rlf_per_ue_min": 0.0,
+    "hof_per_ue_min": 0.19687500000000002,
+    "mean_sinr_db": 6.9380540535288455,
+    "mean_se_bps_hz": 2.8798181369685825,
+    "outage_pct": 0.8171875
+  },
+  "A3 (2dB, 300ms)": {
+    "ho_per_ue_min": 7.3187500000000005,
+    "ping_pong_pct": 8.283518360375748,
+    "rlf_per_ue_min": 0.018750000000000003,
+    "hof_per_ue_min": 0.5281250000000001,
+    "mean_sinr_db": 6.66257215240155,
+    "mean_se_bps_hz": 2.851376696735603,
+    "outage_pct": 1.834375
+  },
+  "A3 (3dB, 500ms)": {
+    "ho_per_ue_min": 4.075,
+    "ping_pong_pct": 1.6104294478527608,
+    "rlf_per_ue_min": 0.48750000000000004,
+    "hof_per_ue_min": 0.8718750000000001,
+    "mean_sinr_db": 6.073567479199616,
+    "mean_se_bps_hz": 2.7829512020922516,
+    "outage_pct": 4.061458333333333
+  },
+  "Shipped model (original sim)": {
+    "ho_per_ue_min": 8.99375,
+    "ping_pong_pct": 14.83669214732453,
+    "rlf_per_ue_min": 0.003125,
+    "hof_per_ue_min": 0.146875,
+    "mean_sinr_db": 6.915243420683154,
+    "mean_se_bps_hz": 2.879632732552178,
+    "outage_pct": 0.8145833333333333
+  },
+  "City model: base": {
+    "ho_per_ue_min": 7.91875,
+    "ping_pong_pct": 26.992896606156275,
+    "rlf_per_ue_min": 0.046875,
+    "hof_per_ue_min": 0.215625,
+    "mean_sinr_db": 6.8603705413260965,
+    "mean_se_bps_hz": 2.870610596620771,
+    "outage_pct": 1.0302083333333334
+  },
+  "City model: position": {
+    "ho_per_ue_min": 6.721875000000001,
+    "ping_pong_pct": 20.176662017666203,
+    "rlf_per_ue_min": 0.037500000000000006,
+    "hof_per_ue_min": 0.171875,
+    "mean_sinr_db": 6.875905875527716,
+    "mean_se_bps_hz": 2.8730374428483163,
+    "outage_pct": 0.9171875
+  },
+  "City model: radio_map": {
+    "ho_per_ue_min": 6.653125,
+    "ping_pong_pct": 19.63363081258807,
+    "rlf_per_ue_min": 0.003125,
+    "hof_per_ue_min": 0.078125,
+    "mean_sinr_db": 6.974409999918903,
+    "mean_se_bps_hz": 2.884861563825904,
+    "outage_pct": 0.5885416666666666
+  },
+  "City model: trajectory": {
+    "ho_per_ue_min": 6.5625,
+    "ping_pong_pct": 18.238095238095237,
+    "rlf_per_ue_min": 0.03125,
+    "hof_per_ue_min": 0.07500000000000001,
+    "mean_sinr_db": 6.912191551472992,
+    "mean_se_bps_hz": 2.87620493399107,
+    "outage_pct": 0.7244791666666667
+  },
+  "City model: all": {
+    "ho_per_ue_min": 6.59375,
+    "ping_pong_pct": 18.48341232227488,
+    "rlf_per_ue_min": 0.0125,
+    "hof_per_ue_min": 0.096875,
+    "mean_sinr_db": 6.950763238475496,
+    "mean_se_bps_hz": 2.8818106071757486,
+    "outage_pct": 0.6484375
+  },
+  "Oracle (non-causal)": {
+    "ho_per_ue_min": 5.90625,
+    "ping_pong_pct": 6.296296296296297,
+    "rlf_per_ue_min": 0.0,
+    "hof_per_ue_min": 0.0,
+    "mean_sinr_db": 7.09811870752941,
+    "mean_se_bps_hz": 2.8987387861594884,
+    "outage_pct": 0.24895833333333334
+  }
+}

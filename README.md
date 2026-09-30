@@ -25,8 +25,9 @@ a near-RT RIC xApp (or an AI-RAN inference service next to the gNB).
 > mining, and a validation plan. The simulator's opt-in "city" model (`--mobility roads
 > --shadowing spatial`) makes these measurable. The model can take location, radio-map and
 > trajectory inputs as optional context tokens. In closed loop in the city, context cuts handover
-> failures by about half and outage by a third versus the same model without it (§13 of that
-> document, including where it does not yet beat the baselines).
+> failures by about half and outage by a third versus the same model without it. Trained for 3
+> epochs, the radio-map model also beats the shipped model and A3 on handover failures (−47 % and
+> −85 % vs A3 2 dB), outage and SE; ping-pong is still higher (§13 and §13.1 of that document).
 
 ## Why an LLM for handover?
 

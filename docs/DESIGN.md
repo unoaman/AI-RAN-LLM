@@ -1710,6 +1710,14 @@ simulator upgrades"*.
   * the radio map carries most of the gain.
 * **Not a clean sweep:** the longer-trained shipped model remains competitive in the city (lower
   RLF and ping-pong). The city models need more training and per-model thresholds.
+* **Follow-up, 3 epochs** (`docs/LOCATION_AWARE_HANDOVER.md` §13.1):
+  * Offline, the base model catches up (recall 0.34 → 0.58), but the closed-loop gain holds. At
+    0.5, radio map vs base: HOF −64 %, outage −43 %, RLF −94 %.
+  * The radio-map model at 0.5 now beats the shipped model: 26 % fewer handovers, 47 % fewer
+    HOFs, 28 % less outage, equal RLF, higher SE.
+  * Ping-pong (about 19 % vs 8 % for A3 at 2 dB) is the remaining gap.
+  * Lesson: judge context by closed-loop KPIs, not offline recall. Run parallel benchmarks with
+    limited torch threads, or run them one at a time.
 
 ### 21.16 Lessons learned
 

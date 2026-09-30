@@ -529,11 +529,91 @@ carry no context, so a context model there behaves like one with all context unk
 
 The ablation already shows the direction clearly: context tokens help.
 
+### 13.1 Longer training (3 epochs)
+
+**User:** *"train the city models longer"* (the first next step above). The same five corpora,
+the same architecture and seed, **3 epochs** (4104 steps, 3× the budget above; checkpoints
+`checkpoints/city_*_e3.pt`). Five parallel single-thread runs took about 1 h 50 min (the "all"
+model about 2 h 20 min) on 4 CPU cores:
+
+```bash
+for v in base position radio_map trajectory all; do
+  PYTHONPATH=. python experiments/location_closed_loop.py --epochs 3 --tag _e3 --only $v --threads 1 &
+done; wait
+PYTHONPATH=. python experiments/location_closed_loop.py --tag _e3 --bench-only                  # 0.35
+PYTHONPATH=. python experiments/location_closed_loop.py --tag _e3 --bench-only --threshold 0.5
+```
+
+Run the benchmarks one at a time. Two benchmarks started in parallel, each with all torch
+threads, stalled for over 2 hours; alone, each takes about 6 minutes. Raw results are in
+`experiments/results/location_closed_loop_e3*.json`, logs in `experiments/logs/`.
+
+**Validation after 3 epochs (teacher-forced, argmax):**
+
+| Model | Answer loss | Decision acc | HO recall | (1 epoch) |
+|---|---:|---:|---:|---:|
+| base | 0.262 | 0.938 | 0.583 | 0.341 |
+| + position | 0.258 | 0.940 | 0.565 | 0.406 |
+| + radio map | 0.261 | 0.942 | 0.586 | 0.488 |
+| + trajectory | 0.259 | 0.941 | 0.566 | 0.392 |
+| all | **0.255** | **0.943** | **0.612** | 0.482 |
+
+With more training the report-only model catches up offline: recall 0.34 → 0.58. Part of the
+1-epoch gap was context making learning *faster*. Offline, "all" keeps only a small lead.
+
+**Closed loop, 3-epoch models, threshold 0.5** (same drives as above):
+
+| Policy | HO/UE/min | Ping-pong % | RLF/UE/min | HOF/UE/min | SE b/s/Hz | Outage % |
+|---|---:|---:|---:|---:|---:|---:|
+| A3 (1 dB, 200 ms) | 13.23 | 28.4 | 0.000 | 0.197 | 2.880 | 0.82 |
+| A3 (2 dB, 300 ms) | 7.32 | **8.3** | 0.019 | 0.528 | 2.851 | 1.83 |
+| Shipped model @ 0.35 (its operating point) | 8.99 | 14.8 | 0.003 | 0.147 | 2.880 | 0.82 |
+| City base | 7.92 | 27.0 | 0.047 | 0.216 | 2.871 | 1.03 |
+| City + position | 6.72 | 20.2 | 0.038 | 0.172 | 2.873 | 0.92 |
+| **City + radio map** | 6.65 | 19.6 | **0.003** | 0.078 | **2.885** | **0.59** |
+| City + trajectory | **6.56** | 18.2 | 0.031 | **0.075** | 2.876 | 0.72 |
+| City all | 6.59 | 18.5 | 0.013 | 0.097 | 2.882 | 0.65 |
+| Teacher (non-causal) | 5.91 | 6.3 | 0.000 | 0.000 | 2.899 | 0.25 |
+
+At threshold 0.35 the 3-epoch city models are too eager (base: 12.1 HO/UE/min, 42 % ping-pong;
+all: 9.2 and 34 %). 0.5 is their operating point.
+
+**What changed with longer training:**
+* **The closed-loop gain from context holds** even though the offline gap shrank. At 0.5,
+  against the same-budget base model:
+  * radio map: HOF −64 %, outage −43 %, RLF −94 %, handovers −16 %, ping-pong 27 → 20 %;
+  * all: HOF −55 %, outage −37 %, RLF −72 %, handovers −17 %, ping-pong 27 → 19 %.
+
+  Per-sample recall does not measure *which* handovers are right. Context mainly moves
+  handovers to the right place and time.
+* **The city models now beat the shipped model** where the 1-epoch ones did not. The radio-map
+  model at 0.5, against the shipped model at 0.35: 26 % fewer handovers, 47 % fewer HOFs, 28 %
+  less outage, equal RLF (0.003) and higher SE. Only ping-pong is worse (19.6 % vs 14.8 %).
+* **Against A3 at 2 dB,** the radio-map model makes 9 % fewer handovers, with 85 % fewer HOFs,
+  68 % less outage, 6× lower RLF and higher SE. Ping-pong is still worse (19.6 % vs 8.3 %).
+* **The "all" model improved with training** (1 → 3 epochs at 0.5): HOF 0.109 → 0.097, outage
+  0.78 → 0.65 %, RLF 0.038 → 0.013, SE 2.876 → 2.882.
+* **The radio map alone is as good as "all" here,** and slightly better on RLF and outage. Adding
+  the other context families did not add closed-loop value on top of the map at this budget. The
+  trajectory prior alone gives the fewest handovers and HOFs, but higher RLF.
+* **Ping-pong is now the main gap** to A3 at 2 dB and to the teacher (6 %). This is the case for
+  model-side hysteresis or a ping-pong-aware label (§8 of `SESSION_HANDOFF.md`).
+* **Caveats as above:** one benchmark seed, one training run per variant, simulated positions,
+  and a location service built in the same simulated city.
+
+**Next:**
+1. Model-side hysteresis or a return-to-previous-cell penalty against ping-pong.
+2. A second benchmark seed and a second training seed for the radio-map and "all" models.
+3. A finer threshold sweep (0.45–0.6) per model.
+4. Carry Location-xApp context through the RAN path (`ran/tracker.py`).
+5. Position from simulated AoA / TA with a tracking filter.
+
 ## Appendix: experiment scripts
 
 * `experiments/location_learnability.py`: the §3 position study (the script below).
 * `experiments/location_closed_loop.py`: the §13 closed-loop study (service, 5 corpora, 5 models,
-  benchmark). Resumable; it takes about 1.5 h on 4 CPU cores.
+  benchmark). Resumable; it takes about 1.5 h on 4 CPU cores at 1 epoch. `--tag`, `--only`,
+  `--bench-only`, `--threshold` and `--threads` support the longer §13.1 runs.
 * `experiments/location_trajectory_learnability.py`: the §9 study (location, radio map and
   trajectory prior, original simulator vs city). Run with seeds 5, 6 and 7.
 
