@@ -1,0 +1,34 @@
+01:50:23 building location service from 20 history drives
+01:50:28 location service: radio-map coverage 22%
+01:50:28 corpus base
+01:50:49   368624 samples, prompt 41 tokens
+01:50:49 training base
+model: 0.85M params | train 350193 | val 18431 | device cpu
+epoch 1 step 400/1368 loss 0.8978 lr 8.96e-04 (258s)
+epoch 1 step 800/1368 loss 0.8176 lr 4.67e-04 (454s)
+epoch 1 step 1200/1368 loss 0.7966 lr 9.29e-05 (658s)
+epoch 1 val: answer_loss 0.3284, decision_acc 0.9144, ho_recall 0.3411
+saved checkpoints/city_base.pt (epoch 1)
+02:03:23 corpus position
+02:03:52   368624 samples, prompt 50 tokens
+02:03:52 training position
+model: 0.86M params | train 350193 | val 18431 | device cpu
+epoch 1 step 400/1368 loss 0.9884 lr 8.96e-04 (216s)
+epoch 1 step 800/1368 loss 0.9145 lr 4.67e-04 (431s)
+epoch 1 step 1200/1368 loss 0.9033 lr 9.29e-05 (651s)
+epoch 1 val: answer_loss 0.3175, decision_acc 0.9190, ho_recall 0.4063
+saved checkpoints/city_position.pt (epoch 1)
+02:16:23 corpus radio_map
+02:16:51   368624 samples, prompt 49 tokens
+02:16:51 training radio_map
+model: 0.86M params | train 350193 | val 18431 | device cpu
+epoch 1 step 400/1368 loss 0.9713 lr 8.96e-04 (214s)
+epoch 1 step 800/1368 loss 0.8883 lr 4.67e-04 (418s)
+epoch 1 step 1200/1368 loss 0.8828 lr 9.29e-05 (622s)
+epoch 1 val: answer_loss 0.3106, decision_acc 0.9265, ho_recall 0.4876
+saved checkpoints/city_radio_map.pt (epoch 1)
+02:28:46 corpus trajectory
+02:29:13   368624 samples, prompt 46 tokens
+02:29:13 training trajectory
+model: 0.86M params | train 350193 | val 18431 | device cpu
+epoch 1 step 400/1368 loss 0.9110 lr 8.96e-04 (199s)

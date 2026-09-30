@@ -1,8 +1,12 @@
 data/*
 !data/handover_corpus.npz
 !data/raw/
+!data/city/
+data/city/*.npz
+!data/city/location_service/
 checkpoints/*
 !checkpoints/handover_llm.pt
+!checkpoints/city_*.pt
 __pycache__/
 *.pyc
 *.egg-info/
