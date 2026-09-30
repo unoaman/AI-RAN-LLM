@@ -54,6 +54,11 @@ def main(argv=None):
                    help="hand over when P(handover to best neighbour) >= this")
     e.add_argument("--json", help="also write results to this file")
     e.add_argument("--location-service", help="for models with location context: radio map + route statistics")
+    e.add_argument("--return-guard", action="store_true",
+                   help="model-side hysteresis: stricter threshold + RSRP margin to hand back to the cell just left")
+    e.add_argument("--guard-window-s", type=float, default=2.0)
+    e.add_argument("--guard-threshold", type=float, default=0.8)
+    e.add_argument("--guard-margin-db", type=float, default=3.0)
 
     i = sub.add_parser("infer", help="decide for one JSON measurement report")
     i.add_argument("report", help="path to a JSON report, or '-' for the built-in example")
@@ -171,15 +176,18 @@ def main(argv=None):
 
     elif a.cmd == "evaluate":
         from .evaluate import benchmark, default_policies, format_table
-        from .inference import HandoverLLM
+        from .inference import HandoverLLM, LLMPolicy, ReturnGuard
         llm = HandoverLLM.load(a.ckpt)
         pols = default_policies(llm, llm.tok.obs_cfg, a.ho_threshold)
+        guard = (lambda: ReturnGuard(a.guard_window_s, a.guard_threshold, a.guard_margin_db)) if a.return_guard \
+            else (lambda: None)
+        pols["HandoverLLM"] = lambda: LLMPolicy(llm, a.ho_threshold, guard())
         if llm.tok.obs_cfg.uses_context:
             from .location import LocationAwarePolicy, LocationService
             svc = LocationService.load(a.location_service) if a.location_service else None
             if svc is None and (llm.tok.obs_cfg.use_radio_map or llm.tok.obs_cfg.use_trajectory):
                 raise SystemExit("this model uses radio-map / trajectory context: pass --location-service")
-            pols["HandoverLLM"] = lambda: LocationAwarePolicy(llm, svc, a.ho_threshold)
+            pols["HandoverLLM"] = lambda: LocationAwarePolicy(llm, svc, a.ho_threshold, guard=guard())
         res = benchmark(pols, a.episodes, a.ues, seed=a.seed, sim=_sim(a))
         print(format_table(res))
         if a.json:

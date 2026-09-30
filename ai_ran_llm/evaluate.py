@@ -6,7 +6,8 @@ from .config import ObsConfig, SimConfig
 from .policies import A3Policy, OraclePolicy
 from .simulator import Metrics, generate_episode, run_policy
 
-COLUMNS = [("ho_per_ue_min", "HO/UE/min"), ("ping_pong_pct", "ping-pong %"), ("rlf_per_ue_min", "RLF/UE/min"),
+COLUMNS = [("ho_per_ue_min", "HO/UE/min"), ("ping_pong_pct", "ping-pong %"), ("return_5s_pct", "return5s %"),
+           ("rlf_per_ue_min", "RLF/UE/min"),
            ("hof_per_ue_min", "HOF/UE/min"), ("mean_sinr_db", "SINR dB"), ("mean_se_bps_hz", "SE b/s/Hz"),
            ("outage_pct", "outage %")]
 

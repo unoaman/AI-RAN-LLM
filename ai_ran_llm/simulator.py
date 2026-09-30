@@ -241,6 +241,7 @@ class Metrics:
     ue_seconds: float = 0.0
     handovers: int = 0
     ping_pongs: int = 0
+    returns_5s: int = 0            # HO back to the previous cell within 5 s (ping-pong in a wider window)
     rlf: int = 0
     ho_failures: int = 0
     sinr_sum: float = 0.0
@@ -258,6 +259,7 @@ class Metrics:
         return {
             "ho_per_ue_min": self.handovers * per_min,
             "ping_pong_pct": 100.0 * self.ping_pongs / max(self.handovers, 1),
+            "return_5s_pct": 100.0 * self.returns_5s / max(self.handovers, 1),
             "rlf_per_ue_min": self.rlf * per_min,
             "hof_per_ue_min": self.ho_failures * per_min,
             "mean_sinr_db": self.sinr_sum / max(self.samples, 1),
@@ -317,9 +319,11 @@ def run_policy(ep: Episode, policy, obs_cfg: ObsConfig, record: bool = False):
         if do_ho.any():
             # the HO command needs several TTIs on the old link: judge it on large-scale SINR
             hof = do_ho & (ep.sinr_db(t, serving, large_scale=True) < sim.hof_sinr_db)
-            pp = do_ho & (target == prev_cell) & (t - last_ho <= sim.ping_pong_steps)
+            back = do_ho & (target == prev_cell)
+            pp = back & (t - last_ho <= sim.ping_pong_steps)
             m.handovers += int(do_ho.sum())
             m.ping_pongs += int(pp.sum())
+            m.returns_5s += int((back & (t - last_ho <= int(round(5.0 / sim.dt_s)))).sum())
             m.ho_failures += int(hof.sum())
             se = np.where(do_ho, se * (1 - interrupt), se)
             prev_cell = np.where(do_ho, serving, prev_cell)

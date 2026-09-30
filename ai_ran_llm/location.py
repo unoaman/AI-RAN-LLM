@@ -242,8 +242,8 @@ class LocationAwarePolicy:
     """Closed-loop policy for ``run_policy`` that feeds a context-enabled model."""
 
     def __init__(self, llm, service: LocationService | None, ho_threshold: float = 0.35,
-                 cfg: LocationConfig | None = None, seed: int = 0):
-        self.llm, self.service, self.ho_threshold = llm, service, ho_threshold
+                 cfg: LocationConfig | None = None, seed: int = 0, guard=None):
+        self.llm, self.service, self.ho_threshold, self.guard = llm, service, ho_threshold, guard
         self.cfg = cfg or (service.cfg if service is not None else LocationConfig())
         self.seed = seed
 
@@ -251,6 +251,8 @@ class LocationAwarePolicy:
         self.est = position_track(ep, np.random.default_rng([self.seed, 99]), self.cfg)
         self.prev = np.full(ep.n_ue, -1)
         self.last = None
+        if self.guard is not None:
+            self.guard.reset()
 
     def decide(self, ep, t, obs) -> np.ndarray:
         if self.last is not None:
@@ -258,4 +260,5 @@ class LocationAwarePolicy:
             self.prev = np.where(changed, self.last, self.prev)
         self.last = obs.serving.copy()
         obs.context = compute_context(ep, t, obs, self.est, self.prev, self.service, self.cfg)
-        return self.llm.decide_batch(obs, self.ho_threshold)[0]
+        thr = self.ho_threshold if self.guard is None else self.guard.thresholds(t * ep.sim.dt_s, obs, self.ho_threshold)
+        return self.llm.decide_batch(obs, thr)[0]

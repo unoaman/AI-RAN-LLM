@@ -1,5 +1,7 @@
 """Inference: grammar-constrained decoding, closed-loop policy and xApp-style API."""
 
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 
@@ -54,18 +56,21 @@ class HandoverLLM:
         p_cell = torch.softmax(cell_logits, dim=-1)
         return act[:, 0].cpu().numpy(), (act[:, 1:2] * p_cell).cpu().numpy()
 
-    def decide_batch(self, obs: Observation, ho_threshold: float = 0.5):
+    def decide_batch(self, obs: Observation, ho_threshold=0.5):
         """Hand over to the most likely neighbour when P(<ho> to it) >= `ho_threshold`.
 
         Handovers are rare, so a threshold below 0.5 trades a few extra handovers
-        for earlier ones. Returns (target (U,) with -1 = stay, confidence (U,)).
+        for earlier ones. `ho_threshold` is a scalar or a (U, K) array with one threshold
+        per reported neighbour (see :class:`ReturnGuard`); the most likely neighbour
+        that clears its own threshold wins. Returns (target (U,) with -1 = stay, confidence (U,)).
         """
         p_stay, p_ho = self.score(self.tok.encode_prompts(obs))
-        k = p_ho.argmax(axis=1)
-        best = p_ho[np.arange(len(k)), k]
-        do_ho = best >= ho_threshold
-        target = np.where(do_ho, obs.nbr_ids[np.arange(len(k)), k], -1)
-        return target, np.where(do_ho, best, p_stay)
+        ok = p_ho >= np.asarray(ho_threshold)
+        k = np.where(ok, p_ho, -1.0).argmax(axis=1)
+        rows = np.arange(len(k))
+        do_ho = ok[rows, k]
+        target = np.where(do_ho, obs.nbr_ids[rows, k], -1)
+        return target, np.where(do_ho, p_ho[rows, k], p_stay)
 
     # --------------------------------------------------------------- generation
     @torch.no_grad()
@@ -225,12 +230,60 @@ def stack_observations(observations: list[Observation]) -> Observation:
     return out
 
 
+@dataclass
+class ReturnGuard:
+    """Model-side hysteresis against ping-pong (docs/DESIGN.md §21.17).
+
+    Within `window_s` of a handover, handing back to the cell the UE just left needs
+    P(<ho> to it) >= `threshold` *and* that cell `margin_db` stronger than serving (latest
+    filtered RSRP). Other targets keep the normal threshold, and so does the return when
+    serving SINR is below `rescue_sinr_db`: the guard must not hold a UE on a failing link
+    (a flat hold-off did exactly that, see RAN_INTEGRATION.md §6).
+
+    Tracks each UE's previous cell and last handover time from the serving cell it
+    sees in consecutive reports, so it works with any report source.
+    """
+
+    window_s: float = 2.0
+    threshold: float = 0.8
+    margin_db: float = 3.0
+    rescue_sinr_db: float = -6.0
+
+    def reset(self) -> None:
+        self.last = None
+
+    def thresholds(self, t_s: float, obs: Observation, base: float) -> np.ndarray:
+        """(U, K) per-neighbour thresholds for the report at time `t_s` (seconds)."""
+        serving = np.asarray(obs.serving)
+        if getattr(self, "last", None) is None or len(self.last) != len(serving):
+            self.prev = np.full(len(serving), -1)
+            self.ho_t = np.full(len(serving), -np.inf)
+        else:
+            changed = serving != self.last
+            self.prev = np.where(changed, self.last, self.prev)
+            self.ho_t = np.where(changed, t_s, self.ho_t)
+        self.last = serving.copy()
+        thr = np.full(obs.nbr_ids.shape, float(base))
+        recent = (t_s - self.ho_t <= self.window_s) & (np.asarray(obs.sinr_db) >= self.rescue_sinr_db)
+        back = recent[:, None] & (obs.nbr_ids == self.prev[:, None])
+        weak = obs.nbr_hist[:, :, -1] - obs.serving_hist[:, -1:] < self.margin_db
+        thr[back] = max(self.threshold, base)
+        thr[back & weak] = np.inf
+        return thr
+
+
 class LLMPolicy:
     """Closed-loop policy for :func:`ai_ran_llm.simulator.run_policy`."""
 
-    def __init__(self, llm: HandoverLLM, ho_threshold: float = 0.5):
+    def __init__(self, llm: HandoverLLM, ho_threshold: float = 0.5, guard: ReturnGuard | None = None):
         self.llm = llm
         self.ho_threshold = ho_threshold
+        self.guard = guard
+
+    def reset(self, ep: Episode, obs_cfg: ObsConfig) -> None:
+        if self.guard is not None:
+            self.guard.reset()
 
     def decide(self, ep: Episode, t: int, obs: Observation) -> np.ndarray:
-        return self.llm.decide_batch(obs, self.ho_threshold)[0]
+        thr = self.ho_threshold if self.guard is None else self.guard.thresholds(t * ep.sim.dt_s, obs, self.ho_threshold)
+        return self.llm.decide_batch(obs, thr)[0]
