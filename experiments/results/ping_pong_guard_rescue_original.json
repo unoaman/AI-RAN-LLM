@@ -1,0 +1,82 @@
+{
+  "A3 (1dB, 200ms)": {
+    "ho_per_ue_min": 17.8625,
+    "ping_pong_pct": 31.088173547935618,
+    "return_5s_pct": 49.72008397480756,
+    "rlf_per_ue_min": 0.0,
+    "hof_per_ue_min": 0.6875,
+    "mean_sinr_db": 6.975235391216387,
+    "mean_se_bps_hz": 2.958684445334937,
+    "outage_pct": 2.2239583333333335
+  },
+  "A3 (2dB, 300ms)": {
+    "ho_per_ue_min": 10.356250000000001,
+    "ping_pong_pct": 13.216656608328304,
+    "return_5s_pct": 35.87809293904647,
+    "rlf_per_ue_min": 0.015625,
+    "hof_per_ue_min": 1.221875,
+    "mean_sinr_db": 6.591549036118171,
+    "mean_se_bps_hz": 2.9187733334681893,
+    "outage_pct": 3.7546875
+  },
+  "Shipped @0.35": {
+    "ho_per_ue_min": 13.3375,
+    "ping_pong_pct": 21.41518275538894,
+    "return_5s_pct": 43.18181818181818,
+    "rlf_per_ue_min": 0.00625,
+    "hof_per_ue_min": 0.525,
+    "mean_sinr_db": 7.039888705922619,
+    "mean_se_bps_hz": 2.9692962793184914,
+    "outage_pct": 1.9203125
+  },
+  "Shipped @0.35 +guard rescue -6 dB": {
+    "ho_per_ue_min": 12.881250000000001,
+    "ping_pong_pct": 18.655992236778264,
+    "return_5s_pct": 40.975254730713246,
+    "rlf_per_ue_min": 0.00625,
+    "hof_per_ue_min": 0.540625,
+    "mean_sinr_db": 7.012939549915427,
+    "mean_se_bps_hz": 2.9656702863799245,
+    "outage_pct": 1.9947916666666667
+  },
+  "Shipped @0.35 +guard rescue -8 dB": {
+    "ho_per_ue_min": 12.103125,
+    "ping_pong_pct": 12.47095274980635,
+    "return_5s_pct": 36.147689129873484,
+    "rlf_per_ue_min": 0.009375000000000001,
+    "hof_per_ue_min": 0.74375,
+    "mean_sinr_db": 6.8823377464537865,
+    "mean_se_bps_hz": 2.9504293598153613,
+    "outage_pct": 2.459375
+  },
+  "Shipped @0.35 +guard rescue -9 dB": {
+    "ho_per_ue_min": 11.721875,
+    "ping_pong_pct": 9.650759797387364,
+    "return_5s_pct": 34.07091442282058,
+    "rlf_per_ue_min": 0.009375000000000001,
+    "hof_per_ue_min": 0.86875,
+    "mean_sinr_db": 6.807513058300581,
+    "mean_se_bps_hz": 2.942048663266719,
+    "outage_pct": 2.763541666666667
+  },
+  "Shipped @0.35 +guard rescue -10 dB": {
+    "ho_per_ue_min": 11.412500000000001,
+    "ping_pong_pct": 7.3932092004381165,
+    "return_5s_pct": 32.2289156626506,
+    "rlf_per_ue_min": 0.0125,
+    "hof_per_ue_min": 1.0250000000000001,
+    "mean_sinr_db": 6.706608565764265,
+    "mean_se_bps_hz": 2.929688557048815,
+    "outage_pct": 3.138541666666667
+  },
+  "Shipped @0.35 +guard rescue -inf dB": {
+    "ho_per_ue_min": 10.568750000000001,
+    "ping_pong_pct": 0.9757539917208752,
+    "return_5s_pct": 24.659964518036666,
+    "rlf_per_ue_min": 0.353125,
+    "hof_per_ue_min": 0.940625,
+    "mean_sinr_db": 6.484486564345091,
+    "mean_se_bps_hz": 2.9023176027367716,
+    "outage_pct": 4.06875
+  }
+}

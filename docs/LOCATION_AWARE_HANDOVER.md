@@ -602,11 +602,35 @@ all: 9.2 and 34 %). 0.5 is their operating point.
   and a location service built in the same simulated city.
 
 **Next:**
-1. Model-side hysteresis or a return-to-previous-cell penalty against ping-pong.
+1. Model-side hysteresis or a return-to-previous-cell penalty against ping-pong (done, §13.2).
 2. A second benchmark seed and a second training seed for the radio-map and "all" models.
 3. A finer threshold sweep (0.45–0.6) per model.
 4. Carry Location-xApp context through the RAN path (`ran/tracker.py`).
 5. Position from simulated AoA / TA with a tracking filter.
+
+### 13.2 Ping-pong: model-side hysteresis
+
+Ping-pong was the remaining gap in §13.1. `ReturnGuard` (details and full tables in
+`docs/DESIGN.md` §21.17) makes only the hand-back to the previous cell harder for 2 s: it needs
+P ≥ 0.9 and a 5 dB RSRP margin, unless serving SINR is below a rescue level. No retraining.
+
+| City, threshold 0.5 | HO/UE/min | Ping-pong % | Return 5 s % | RLF/UE/min | HOF/UE/min | SE | Outage % |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| A3 (2 dB, 300 ms) | 7.32 | 8.3 | 29.2 | 0.019 | 0.528 | 2.851 | 1.83 |
+| Shipped model @0.35 | 8.99 | 14.8 | 35.2 | 0.003 | 0.147 | 2.880 | 0.82 |
+| Radio map | 6.65 | 19.6 | 33.4 | 0.003 | 0.078 | 2.885 | 0.59 |
+| **Radio map + guard** (rescue −6 dB) | 5.96 | 7.2 | 24.9 | 0.003 | 0.050 | 2.885 | 0.55 |
+| **Radio map + guard** (rescue −8 dB) | 5.81 | 4.1 | 23.1 | 0.003 | 0.047 | 2.883 | 0.58 |
+| All + guard (rescue −6 dB) | 6.00 | 7.2 | 25.5 | 0.013 | 0.062 | 2.882 | 0.60 |
+
+With the guard, the location-aware model **beats A3 at 2 dB on every KPI**, including ping-pong,
+and beats the shipped model on everything too. Location and the guard complement each other:
+location makes handovers go to the right cell at the right time (fewer HOFs), and the guard
+removes the hand-backs that are left. In the city the guard costs nothing; in the original
+simulator most returns are genuine rescues, so there it is a trade-off (§21.17).
+
+Try it: `python -m ai_ran_llm evaluate --ckpt checkpoints/city_radio_map_e3.pt --ho-threshold 0.5
+--mobility roads --shadowing spatial --location-service data/city/location_service --return-guard`.
 
 ## Appendix: experiment scripts
 
@@ -614,6 +638,8 @@ all: 9.2 and 34 %). 0.5 is their operating point.
 * `experiments/location_closed_loop.py`: the §13 closed-loop study (service, 5 corpora, 5 models,
   benchmark). Resumable; it takes about 1.5 h on 4 CPU cores at 1 epoch. `--tag`, `--only`,
   `--bench-only`, `--threshold` and `--threads` support the longer §13.1 runs.
+* `experiments/ping_pong_guard.py`: the §13.2 / DESIGN §21.17 guard sweeps (`--part city`,
+  `original`, `rescue`).
 * `experiments/location_trajectory_learnability.py`: the §9 study (location, radio map and
   trajectory prior, original simulator vs city). Run with seeds 5, 6 and 7.
 

@@ -67,6 +67,7 @@ simulator (19 cells, 3GPP-style channel, UE mobility)
 | Location learnability, city, 3 seeds (recall @ 50 % precision) | radio-map forecast **+78 %**, position + heading +27 %, trajectory prior (no location) +16 %, all +83 %; target accuracy 82 → 90 % | `LOCATION_AWARE_HANDOVER.md` §9 |
 | City models, closed loop, "all" vs report-only (same budget) | HOF −52…−62 %, outage −34…−41 %, RLF about halved; the radio map carries most of it; ping-pong still high; the shipped model is still competitive | `LOCATION_AWARE_HANDOVER.md` §13 |
 | City models, 3 epochs, threshold 0.5 | Radio map vs base: HOF −64 %, outage −43 %, RLF −94 %. Radio map vs shipped model @0.35: HO −26 %, HOF −47 %, outage −28 %, equal RLF, higher SE; ping-pong 19.6 % vs 14.8 % (A3 2 dB: 8.3 %) | `LOCATION_AWARE_HANDOVER.md` §13.1 |
+| Ping-pong guard (`ReturnGuard`, no retraining) | City radio map: ping-pong 19.6 → 7.2 % (4.1 % at rescue −8 dB), HOF and outage also lower; beats A3 2 dB on every KPI. Original sim: most returns are rescues; −8 dB gives 12.5 % for more outage. No rescue → RLF ×60 | `DESIGN.md` §21.17 |
 | Negative results | Label smoothing (window / confirm) did not help; delta tokens did not raise per-sample recall; per-sample accuracy is misleading (always-STAY ≈ 88–90 %) | `DESIGN.md` §21.8 |
 
 ---
@@ -176,14 +177,14 @@ Re-run (skips existing outputs): `PYTHONPATH=. python experiments/location_close
 
 ## 8. Open next steps (priority order)
 
-1. **Strengthen §4:** longer training is done (3 epochs, §13.1). Next: model-side hysteresis or a
-   return-to-previous-cell penalty to bring ping-pong down (about 19 % vs 8 % for A3 at 2 dB), a
-   finer per-model threshold sweep (0.45–0.6), and a second benchmark and training seed.
+1. **Strengthen §4:** longer training (3 epochs, §13.1) and the ping-pong guard (DESIGN §21.17)
+   are done. Next: put `ReturnGuard` into the RAN controller (`ran/controller.py`), a finer
+   per-model threshold sweep (0.45–0.6), and a second benchmark and training seed.
 2. **Location in the RAN path:** let `ai_ran_llm/ran/tracker.py` pass Location-xApp context into
    reports (`report_to_observation` already accepts it).
 3. **Realistic positioning:** derive position from simulated AoA / TA; add a Kalman filter
    (radial speed is noisy today, about ±14 m/s at 10 m error).
-4. **Model:** model-side hysteresis against ping-pong; iterative DAgger; RL fine-tuning; more
+4. **Model:** a ping-pong-aware training label; iterative DAgger; RL fine-tuning; more
    data for the city models.
 5. **Real network:** shadow-mode trial on OCUDU / OAI (`docs/RAN_INTEGRATION.md` §10);
    retrain on real traces (`gen-data --from-drives`).

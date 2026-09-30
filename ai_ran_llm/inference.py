@@ -245,9 +245,9 @@ class ReturnGuard:
     """
 
     window_s: float = 2.0
-    threshold: float = 0.8
-    margin_db: float = 3.0
-    rescue_sinr_db: float = -6.0
+    threshold: float = 0.9
+    margin_db: float = 5.0
+    rescue_sinr_db: float = -6.0      # -8 trades a little outage for about half the ping-pong (§21.17)
 
     def reset(self) -> None:
         self.last = None

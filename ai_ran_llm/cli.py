@@ -57,8 +57,10 @@ def main(argv=None):
     e.add_argument("--return-guard", action="store_true",
                    help="model-side hysteresis: stricter threshold + RSRP margin to hand back to the cell just left")
     e.add_argument("--guard-window-s", type=float, default=2.0)
-    e.add_argument("--guard-threshold", type=float, default=0.8)
-    e.add_argument("--guard-margin-db", type=float, default=3.0)
+    e.add_argument("--guard-threshold", type=float, default=0.9)
+    e.add_argument("--guard-margin-db", type=float, default=5.0)
+    e.add_argument("--guard-rescue-sinr-db", type=float, default=-6.0,
+                   help="below this serving SINR the guard steps aside (never hold a UE on a failing link)")
 
     i = sub.add_parser("infer", help="decide for one JSON measurement report")
     i.add_argument("report", help="path to a JSON report, or '-' for the built-in example")
@@ -179,7 +181,8 @@ def main(argv=None):
         from .inference import HandoverLLM, LLMPolicy, ReturnGuard
         llm = HandoverLLM.load(a.ckpt)
         pols = default_policies(llm, llm.tok.obs_cfg, a.ho_threshold)
-        guard = (lambda: ReturnGuard(a.guard_window_s, a.guard_threshold, a.guard_margin_db)) if a.return_guard \
+        guard = (lambda: ReturnGuard(a.guard_window_s, a.guard_threshold, a.guard_margin_db,
+                                                a.guard_rescue_sinr_db)) if a.return_guard \
             else (lambda: None)
         pols["HandoverLLM"] = lambda: LLMPolicy(llm, a.ho_threshold, guard())
         if llm.tok.obs_cfg.uses_context:

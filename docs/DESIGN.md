@@ -1740,6 +1740,63 @@ simulator upgrades"*.
 
 ---
 
+### 21.17 Model-side hysteresis against ping-pong (ReturnGuard)
+
+**User:** *"yes go ahead for reducing ping-pong"*. After 3 epochs the city models beat every
+baseline except on ping-pong (about 19 % vs 8 % for A3 at 2 dB).
+
+* **Idea:** most ping-pongs are a quick hand-back to the cell just left. Rather than slowing
+  *every* handover (the controller's `hold_off` / `confirm` guard rails did that, and paid in RLF
+  and outage, `RAN_INTEGRATION.md` §6), make only the **return** harder, and only while it is
+  still a ping-pong candidate.
+* **Mechanism** (`ai_ran_llm/inference.py`, no retraining):
+  * `decide_batch` takes a scalar or a **(U, K) per-neighbour threshold**. The most likely
+    neighbour that clears its own threshold wins. Scalar behaviour is unchanged.
+  * `ReturnGuard(window_s=2, threshold=0.9, margin_db=5, rescue_sinr_db=-6)` tracks each UE's
+    previous cell and last handover time from consecutive reports. Within `window_s`, the
+    previous cell needs P ≥ `threshold` **and** latest filtered RSRP ≥ serving + `margin_db`;
+    otherwise that column is blocked (other neighbours are unaffected).
+  * **Rescue:** below `rescue_sinr_db` serving SINR, the guard steps aside. Never hold a UE on a
+    failing link.
+  * Wired into `LLMPolicy`, `LocationAwarePolicy` and `evaluate --return-guard` (`--guard-*`).
+* **Honest metric:** `Metrics.returns_5s` / `return_5s_pct` (hand-back within 5 s). A guard that
+  only postponed returns past the 1 s ping-pong window would lower ping-pong but not this.
+* **Results** (`experiments/ping_pong_guard.py`, results in `experiments/results/ping_pong_guard_*.json`):
+
+  | Policy | HO/UE/min | Ping-pong % | Return 5 s % | RLF/UE/min | HOF/UE/min | SE | Outage % |
+  |---|---:|---:|---:|---:|---:|---:|---:|
+  | *City:* A3 (2 dB, 300 ms) | 7.32 | 8.3 | 29.2 | 0.019 | 0.528 | 2.851 | 1.83 |
+  | City radio map @0.5 | 6.65 | 19.6 | 33.4 | 0.003 | 0.078 | 2.885 | 0.59 |
+  | **+ guard (rescue −6 dB)** | 5.96 | 7.2 | 24.9 | 0.003 | 0.050 | 2.885 | **0.55** |
+  | **+ guard (rescue −8 dB)** | 5.81 | **4.1** | 23.1 | 0.003 | **0.047** | 2.883 | 0.58 |
+  | + guard (never rescue) | 5.60 | 1.5 | 20.9 | 0.031 | 0.072 | 2.880 | 0.72 |
+  | City base (no location) @0.5 | 7.92 | 27.0 | 41.5 | 0.047 | 0.216 | 2.871 | 1.03 |
+  | + guard (2 s, 0.9, 5 dB, −6 dB) | 6.64 | 9.9 | 29.8 | 0.034 | 0.122 | 2.874 | 0.85 |
+  | *Original sim:* A3 (2 dB, 300 ms) | 10.36 | 13.2 | 35.9 | 0.016 | 1.222 | 2.919 | 3.76 |
+  | Shipped @0.35 | 13.34 | 21.4 | 43.2 | 0.006 | 0.525 | 2.969 | 1.92 |
+  | + guard (rescue −6 dB) | 12.88 | 18.7 | 41.0 | 0.006 | 0.541 | 2.966 | 2.00 |
+  | + guard (rescue −8 dB) | 12.10 | 12.5 | 36.1 | 0.009 | 0.744 | 2.950 | 2.46 |
+  | + guard (rescue −10 dB) | 11.41 | 7.4 | 32.2 | 0.013 | 1.025 | 2.930 | 3.14 |
+  | + guard (never rescue) | 10.57 | 1.0 | 24.7 | 0.353 | 0.941 | 2.902 | 4.07 |
+
+* **Findings:**
+  * **City: a free win.** Radio map + guard beats A3 at 2 dB on *every* KPI (ping-pong 7.2 vs
+    8.3 %, 19 % fewer handovers, 90 % fewer HOFs, 70 % less outage, 6× lower RLF, higher SE).
+    At −8 dB rescue, ping-pong drops to 4.1 % and still no KPI is worse than without the guard.
+    The guard also takes the no-location model from 27 % to 10 % ping-pong with half the HOFs.
+  * **Original simulator: a trade-off.** 79 % of the shipped model's returns happen at serving
+    SINR below −6 dB (median −7.4 dB): they are rescues, because per-UE shadowing there really
+    does make the old cell better again. Lowering the rescue level trades outage and HOF for
+    ping-pong. At −8 dB the shipped model beats A3 at 2 dB on ping-pong, RLF, HOF, SE and
+    outage (but hands over more).
+  * **The rescue is essential:** without it, RLF grows 60× on the original simulator.
+  * Returns are prevented, not postponed: return-within-5 s falls together with ping-pong.
+* **Defaults:** `ReturnGuard()` = (2 s, 0.9, 5 dB, rescue −6 dB): never worse than no guard on
+  outage in the city. Use `rescue_sinr_db=-8` when ping-pong matters more than a few tenths of a
+  percent of outage.
+* **Not done yet:** the same guard in the RAN controller (`ran/controller.py`, next to `hold_off` /
+  `confirm`), and a ping-pong-aware training label.
+
 ## 22. Extension guide and invariants (for humans and AI agents)
 
 ### 22.1 Invariants — do not break silently

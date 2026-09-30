@@ -27,7 +27,8 @@ a near-RT RIC xApp (or an AI-RAN inference service next to the gNB).
 > trajectory inputs as optional context tokens. In closed loop in the city, context cuts handover
 > failures by about half and outage by a third versus the same model without it. Trained for 3
 > epochs, the radio-map model also beats the shipped model and A3 on handover failures (−47 % and
-> −85 % vs A3 2 dB), outage and SE; ping-pong is still higher (§13 and §13.1 of that document).
+> −85 % vs A3 2 dB), outage and SE (§13 and §13.1 of that document). With the ping-pong guard below, it beats A3 at
+> 2 dB on every KPI in the city, including ping-pong (7.2 % vs 8.3 %; §13.2).
 
 ## Why an LLM for handover?
 
@@ -307,6 +308,13 @@ How to read this:
   | 0.50 | 8.69 | 9.0 | 0.95 | 2.936 | 3.07 |
 
   Use 0.5 if handover signalling load matters more than throughput.
+* **Ping-pong guard (`--return-guard`).** Model-side hysteresis: for 2 s after a handover, going
+  back to the cell just left needs P ≥ 0.9 and a 5 dB margin, unless serving SINR is below −6 dB
+  (never hold a UE on a failing link). On these drives most returns are genuine rescues, so the
+  default only trims ping-pong (21.4 → 18.7 %); `--guard-rescue-sinr-db -8` gives 12.5 %,
+  below A3 at 2 dB, for a little more outage (1.92 → 2.46 %) and HOF (0.53 → 0.74). In the city
+  simulator the guard costs nothing (19.6 → 7.2 % for the radio-map model). See
+  `docs/DESIGN.md` §21.17.
 * **There is still a clear gap to the teacher.** Per-sample validation accuracy is 88% and
   handover recall at argmax is 13%. The teacher reacts to future shadowing, much of which
   cannot be predicted from a 1 s report history.
