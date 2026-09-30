@@ -39,6 +39,8 @@ class Episode:
     # Optional, from logged traces: serving cell and SINR at each report (U, T)
     logged_serving: np.ndarray | None = field(default=None, repr=False)
     logged_sinr_db: np.ndarray | None = field(default=None, repr=False)
+    # Road mobility (SimConfig.mobility == "roads"): index into city.city_routes(sim) per UE
+    route_id: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def n_ue(self) -> int:
@@ -71,6 +73,16 @@ def generate_episode(n_ue: int, n_steps: int, rng: np.random.Generator,
     sites = hex_sites(sim.rings, sim.isd_m)
     n_cells = len(sites)
     radius = sim.rings * sim.isd_m * 0.85
+    if sim.mobility not in ("random", "roads"):
+        raise ValueError(f"unknown mobility model {sim.mobility!r}")
+    if sim.shadowing not in ("per_ue", "spatial"):
+        raise ValueError(f"unknown shadowing model {sim.shadowing!r}")
+
+    if sim.mobility == "roads":
+        # --- mobility: routes on the city's road network (city.py) ---
+        from .city import road_mobility
+        pos, speed_kmh, route_id = road_mobility(n_ue, n_steps, rng, sim)
+        return _channel(pos, speed_kmh, sites, rng, sim, route_id)
 
     # --- mobility: Gauss-Markov heading, constant per-UE speed, soft boundary ---
     r0 = radius * np.sqrt(rng.uniform(0, 1, n_ue))
@@ -89,17 +101,34 @@ def generate_episode(n_ue: int, n_steps: int, rng: np.random.Generator,
             back = np.arctan2(-xy[outside, 1], -xy[outside, 0])
             heading[outside] = back + rng.normal(0, 0.5, outside.sum())
         xy = xy + step_m[:, None] * np.stack([np.cos(heading), np.sin(heading)], axis=1)
+    return _channel(pos, speed_kmh, sites, rng, sim)
+
+
+def _channel(pos, speed_kmh, sites, rng, sim: SimConfig, route_id=None) -> Episode:
+    n_ue, n_steps, n_cells = pos.shape[0], pos.shape[1], len(sites)
 
     # --- large-scale channel: 3GPP macro path loss + distance-correlated shadowing ---
     d_km = np.maximum(np.linalg.norm(pos[:, :, None, :] - sites[None, None], axis=-1), 10.0) / 1000.0
     pathloss = 128.1 + 37.6 * np.log10(d_km)
 
-    a = np.exp(-step_m / sim.shadow_decorr_m)[:, None]
-    shadow = np.empty((n_ue, n_steps, n_cells))
-    s = rng.normal(0, sim.shadow_sigma_db, (n_ue, n_cells))
-    for t in range(n_steps):
-        shadow[:, t] = s
-        s = a * s + np.sqrt(1 - a ** 2) * rng.normal(0, sim.shadow_sigma_db, (n_ue, n_cells))
+    if sim.shadowing == "spatial":
+        # tied to places: the same for every UE and drive at a given spot (city.py)
+        from .city import spatial_shadowing
+        shadow = spatial_shadowing(pos, sim)
+    else:
+        # AR(1) along each UE's path, decorrelating with distance travelled (Gudmundson)
+        if sim.mobility == "random":
+            step_m = speed_kmh / 3.6 * sim.dt_s
+            a_t = np.broadcast_to(np.exp(-step_m / sim.shadow_decorr_m)[:, None, None], (n_ue, n_steps, 1))
+        else:
+            moved = np.linalg.norm(np.diff(pos, axis=1, append=pos[:, -1:]), axis=-1)
+            a_t = np.exp(-moved / sim.shadow_decorr_m)[:, :, None]
+        shadow = np.empty((n_ue, n_steps, n_cells))
+        s = rng.normal(0, sim.shadow_sigma_db, (n_ue, n_cells))
+        for t in range(n_steps):
+            a = a_t[:, t]
+            shadow[:, t] = s
+            s = a * s + np.sqrt(1 - a ** 2) * rng.normal(0, sim.shadow_sigma_db, (n_ue, n_cells))
 
     rsrp_true = sim.tx_power_dbm - pathloss - shadow
     rsrp_inst = rsrp_true + rng.normal(0, sim.fading_sigma_db, rsrp_true.shape)
@@ -111,7 +140,7 @@ def generate_episode(n_ue: int, n_steps: int, rng: np.random.Generator,
     for t in range(1, n_steps):
         meas[:, t] = (1 - sim.l3_alpha) * meas[:, t - 1] + sim.l3_alpha * raw[:, t]
 
-    return Episode(sites, pos, speed_kmh, rsrp_true, rsrp_inst, meas, sim)
+    return Episode(sites, pos, speed_kmh, rsrp_true, rsrp_inst, meas, sim, route_id=route_id)
 
 
 def save_episode(path: str, ep: Episode, **extra) -> None:

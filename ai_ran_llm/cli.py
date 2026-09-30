@@ -11,6 +11,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     g = sub.add_parser("gen-data", help="simulate drives and build a tokenised corpus")
+    _city_args(g)
     g.add_argument("--episodes", type=int, default=60)
     g.add_argument("--ues", type=int, default=32)
     g.add_argument("--steps", type=int, default=600)
@@ -33,6 +34,7 @@ def main(argv=None):
     t.add_argument("--embd", type=int, default=128)
 
     e = sub.add_parser("evaluate", help="closed-loop benchmark vs A3")
+    _city_args(e)
     e.add_argument("--ckpt", default="checkpoints/handover_llm.pt")
     e.add_argument("--episodes", type=int, default=5)
     e.add_argument("--ues", type=int, default=64)
@@ -56,6 +58,7 @@ def main(argv=None):
                    help="below this, the A3 fallback decides instead of the model")
 
     r = sub.add_parser("export-raw", help="export the raw drives and readable measurement reports")
+    _city_args(r)
     r.add_argument("--episodes", type=int, default=1, help="first N drives of the corpus")
     r.add_argument("--ues", type=int, default=32)
     r.add_argument("--steps", type=int, default=600)
@@ -100,6 +103,7 @@ def main(argv=None):
     rx.add_argument("-v", "--verbose", action="store_true")
 
     fg = sub.add_parser("fake-gnb", help="simulated gNB that talks to a running ran-xapp over the bridge")
+    _city_args(fg)
     fg.add_argument("--xapp", default="127.0.0.1:7000", help="ran-xapp bridge HOST:PORT")
     fg.add_argument("--ues", type=int, default=16)
     fg.add_argument("--steps", type=int, default=600)
@@ -126,7 +130,7 @@ def main(argv=None):
 
     if a.cmd == "gen-data":
         from .dataset import generate_dataset
-        d = generate_dataset(a.episodes, a.ues, a.steps, a.seed,
+        d = generate_dataset(a.episodes, a.ues, a.steps, a.seed, sim=_sim(a),
                              drives=sorted(a.from_drives) if a.from_drives else None, serving=a.serving)
         os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
         np.savez_compressed(a.out, **d)
@@ -143,7 +147,8 @@ def main(argv=None):
         from .evaluate import benchmark, default_policies, format_table
         from .inference import HandoverLLM
         llm = HandoverLLM.load(a.ckpt)
-        res = benchmark(default_policies(llm, llm.tok.obs_cfg, a.ho_threshold), a.episodes, a.ues, seed=a.seed)
+        res = benchmark(default_policies(llm, llm.tok.obs_cfg, a.ho_threshold), a.episodes, a.ues, seed=a.seed,
+                        sim=_sim(a))
         print(format_table(res))
         if a.json:
             with open(a.json, "w") as f:
@@ -160,7 +165,7 @@ def main(argv=None):
 
     elif a.cmd == "export-raw":
         from .dataset import export_raw
-        n = export_raw(a.out, a.episodes, a.ues, a.steps, a.seed)
+        n = export_raw(a.out, a.episodes, a.ues, a.steps, a.seed, sim=_sim(a))
         print(f"wrote {n['reports']} reports ({n['in_corpus']} in the corpus) and {a.episodes} drive(s) to {a.out}/")
 
     elif a.cmd == "ran-xapp":
@@ -171,7 +176,7 @@ def main(argv=None):
         from .simulator import generate_episode
         from .evaluate import COLUMNS
         host, _, port = a.xapp.rpartition(":")
-        ep = generate_episode(a.ues, a.steps, np.random.default_rng(a.seed))
+        ep = generate_episode(a.ues, a.steps, np.random.default_rng(a.seed), _sim(a))
         kw = dict(report_every=2, report_all_cells=False, max_neighbours=8, quantize_rrc=True) if a.realistic else {}
         gnb = FakeGnb(ep, host or "127.0.0.1", int(port), **kw)
         m, _ = gnb.run()
@@ -204,6 +209,20 @@ def main(argv=None):
         d = np.load(a.data)
         n = export_jsonl(d["tokens"], int(d["prompt_len"]), a.out, a.limit)
         print(f"wrote {n} examples to {a.out}")
+
+
+def _city_args(p):
+    c = p.add_argument_group("city model (docs/LOCATION_AWARE_HANDOVER.md; defaults = original simulator)")
+    c.add_argument("--mobility", default="random", choices=["random", "roads"],
+                   help="random: Gauss-Markov heading; roads: popular routes on a road network")
+    c.add_argument("--shadowing", default="per_ue", choices=["per_ue", "spatial"],
+                   help="per_ue: random along each path; spatial: fixed field per cell, tied to places")
+    c.add_argument("--map-seed", type=int, default=1, help="which city (roads, routes, shadowing field)")
+
+
+def _sim(a):
+    from .config import SimConfig
+    return SimConfig(mobility=a.mobility, shadowing=a.shadowing, map_seed=a.map_seed)
 
 
 def _kv(items, base=None):
