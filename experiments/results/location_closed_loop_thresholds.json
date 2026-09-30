@@ -1,0 +1,47 @@
+{
+  "City base, threshold 0.5": {
+    "ho_per_ue_min": 7.5875,
+    "ping_pong_pct": 18.86326194398682,
+    "rlf_per_ue_min": 0.078125,
+    "hof_per_ue_min": 0.22812500000000002,
+    "mean_sinr_db": 6.8038168720257195,
+    "mean_se_bps_hz": 2.8665570737716353,
+    "outage_pct": 1.1833333333333333
+  },
+  "City all, threshold 0.5": {
+    "ho_per_ue_min": 6.1937500000000005,
+    "ping_pong_pct": 17.10393541876892,
+    "rlf_per_ue_min": 0.037500000000000006,
+    "hof_per_ue_min": 0.109375,
+    "mean_sinr_db": 6.9012500745717675,
+    "mean_se_bps_hz": 2.8757318517923305,
+    "outage_pct": 0.7796875
+  },
+  "City base, threshold 0.6": {
+    "ho_per_ue_min": 5.93125,
+    "ping_pong_pct": 10.748155953635406,
+    "rlf_per_ue_min": 0.08750000000000001,
+    "hof_per_ue_min": 0.215625,
+    "mean_sinr_db": 6.747349069876313,
+    "mean_se_bps_hz": 2.8589717234016545,
+    "outage_pct": 1.3046875
+  },
+  "City all, threshold 0.6": {
+    "ho_per_ue_min": 5.165625,
+    "ping_pong_pct": 10.344827586206897,
+    "rlf_per_ue_min": 0.06875,
+    "hof_per_ue_min": 0.065625,
+    "mean_sinr_db": 6.865769691961088,
+    "mean_se_bps_hz": 2.871303221415243,
+    "outage_pct": 0.8489583333333334
+  },
+  "Shipped model, threshold 0.5": {
+    "ho_per_ue_min": 5.800000000000001,
+    "ping_pong_pct": 5.387931034482759,
+    "rlf_per_ue_min": 0.043750000000000004,
+    "hof_per_ue_min": 0.42500000000000004,
+    "mean_sinr_db": 6.664691417579853,
+    "mean_se_bps_hz": 2.851732567134598,
+    "outage_pct": 1.6833333333333333
+  }
+}

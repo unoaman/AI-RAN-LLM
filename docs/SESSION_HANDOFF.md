@@ -65,7 +65,7 @@ simulator (19 cells, 3GPP-style channel, UE mobility)
 | Real-RAN path (fake gNB over TCP) | Reproduces the benchmark **exactly** (identical trajectories); realistic reporting (200 ms, 8 neighbours, RRC-quantised) costs SE −0.025 | `RAN_INTEGRATION.md` §6 |
 | Guard rails | `--confirm 2`: ping-pong 21 → 8 %, but outage 1.9 → 3.7 %; `--hold-off-s 1` raises RLF 0.006 → 0.34. Defaults: confirm 1, hold-off 0, A3 override 6 dB (free in-distribution) | `RAN_INTEGRATION.md` §6 |
 | Location learnability, city, 3 seeds (recall @ 50 % precision) | radio-map forecast **+78 %**, position + heading +27 %, trajectory prior (no location) +16 %, all +83 %; target accuracy 82 → 90 % | `LOCATION_AWARE_HANDOVER.md` §9 |
-| City models, validation after 1 epoch (HO recall) | base 0.341, +position 0.406, +radio map 0.488, trajectory / all: see §4 | this file, §4 |
+| City models, closed loop, "all" vs report-only (same budget) | HOF −52…−62 %, outage −34…−41 %, RLF about halved; the radio map carries most of it; ping-pong still high; the shipped model is still competitive | `LOCATION_AWARE_HANDOVER.md` §13 |
 | Negative results | Label smoothing (window / confirm) did not help; delta tokens did not raise per-sample recall; per-sample accuracy is misleading (always-STAY ≈ 88–90 %) | `DESIGN.md` §21.8 |
 
 ---
@@ -101,42 +101,22 @@ docs/              DESIGN, RAN_INTEGRATION, LOCATION_AWARE_HANDOVER, SESSION_HAN
 
 ---
 
-## 4. In-flight work: closed-loop location experiment
+## 4. Closed-loop location experiment (finished)
 
-`experiments/location_closed_loop.py` builds a location service from 20 history drives (seed
-777). It then builds 5 city corpora with identical drives and labels (seed 0, 40 drives × 32 UEs,
-368 624 samples each), trains one model per corpus (1 epoch, same architecture), and benchmarks
-them in the city (seed 10000, 5 × 64 UEs × 60 s) against A3, the shipped model and the teacher.
+`experiments/location_closed_loop.py` trained 5 city models on identical drives (1 epoch each)
+and benchmarked them in the city. The five checkpoints (`checkpoints/city_*.pt`), the location
+service (`data/city/location_service/`), the log (`experiments/logs/`) and the raw results
+(`experiments/results/`) are committed. The corpora are regenerable from the seeds.
 
-| Model | Prompt | Val decision acc | Val HO recall | Checkpoint |
-|---|---:|---:|---:|---|
-| base (report only) | 41 | 0.914 | 0.341 | `checkpoints/city_base.pt` (committed) |
-| + position | 50 | 0.919 | 0.406 | `checkpoints/city_position.pt` (committed) |
-| + radio map | 49 | 0.927 | 0.488 | `checkpoints/city_radio_map.pt` (committed) |
-| + trajectory | 46 | 0.918 | 0.392 | `checkpoints/city_trajectory.pt` (committed) |
-| all | 63 | 0.927 | 0.482 | `checkpoints/city_all.pt` (committed) |
+**Headline** (`docs/LOCATION_AWARE_HANDOVER.md` §13): location context works. With the same data
+and budget, the "all" model beats report-only at every threshold (HOF −52…−62 %, outage
+−34…−41 %, RLF about halved), and the radio map carries most of the gain.
 
-* **Committed so far:** all five checkpoints, the location service
-  (`data/city/location_service/`) and the partial log
-  (`experiments/logs/location_closed_loop.partial.log`).
-* **Not committed:** the corpora (17–21 MB each), which are fully reproducible from the seeds.
+**Limit:** the shipped model (3× the training steps) is still competitive in the city, with lower
+RLF and ping-pong. The next steps are to train the city models longer, tune thresholds per model,
+and add a second benchmark seed.
 
-**To finish on any machine** (the script skips the service and models that already exist, so
-only the benchmark runs):
-
-```bash
-PYTHONPATH=. python experiments/location_closed_loop.py      # → data/city/closed_loop.json
-```
-
-Then:
-1. Fill `CLOSED_LOOP_RESULTS` in `docs/LOCATION_AWARE_HANDOVER.md` §13 from
-   `data/city/closed_loop.json` (use `ai_ran_llm.evaluate.format_table`).
-2. Add the headline to README and to `docs/DESIGN.md` §21.15.
-3. Commit the new checkpoints (`checkpoints/city_*.pt` is allowed by `.gitignore`).
-
-A missing corpus is regenerated identically: same seed, same bytes.
-
----
+Re-run (skips existing outputs): `PYTHONPATH=. python experiments/location_closed_loop.py`.
 
 ## 5. Decisions worth knowing before changing anything
 
@@ -191,8 +171,8 @@ A missing corpus is regenerated identically: same seed, same bytes.
 
 ## 8. Open next steps (priority order)
 
-1. **Finish §4** (closed-loop location results) and decide whether context tokens improve
-   closed-loop KPIs: recall, outage and HOF without raising RLF or ping-pong.
+1. **Strengthen §4:** train the city models for 2+ epochs on 60 drives, tune the threshold per
+   model, add a second benchmark seed, and add model-side hysteresis to bring ping-pong down.
 2. **Location in the RAN path:** let `ai_ran_llm/ran/tracker.py` pass Location-xApp context into
    reports (`report_to_observation` already accepts it).
 3. **Realistic positioning:** derive position from simulated AoA / TA; add a Kalman filter
@@ -224,6 +204,7 @@ A missing corpus is regenerated identically: same seed, same bytes.
    asked) → `docs/LOCATION_AWARE_HANDOVER.md`.
 8. Trajectory mining? → concept; then implemented the city simulator and measured it (radio map
    +78 %).
-9. Make the model use location → context tokens, `location.py`, the closed-loop experiment (§4).
+9. Make the model use location → context tokens, `location.py`, the closed-loop experiment (§4):
+   context halves HOF and cuts outage by a third at equal budget.
 10. Save the session for another machine → this handoff; committed the finished experiment
     artifacts.

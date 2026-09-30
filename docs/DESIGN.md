@@ -1702,8 +1702,14 @@ simulator upgrades"*.
     flags, `evaluate --location-service`), 7 tests.
 * **Checked:** the default corpus is still bit-identical; the shipped checkpoint is unaffected.
 * **Experiment:** `experiments/location_closed_loop.py` trains 5 models on identical city drives
-  (base, +position, +radio map, +trajectory, all) and benchmarks them in closed loop
+  (base, +position, +radio map, +trajectory, all; 1 epoch each) and benchmarks them in closed loop
   (`docs/LOCATION_AWARE_HANDOVER.md` §13).
+* **Result, "all" vs base at the same budget:**
+  * threshold 0.35: HOF −62 %, outage −41 %, handovers −24 %, RLF −45 %;
+  * threshold 0.5: HOF −52 %, outage −34 %, RLF −51 %;
+  * the radio map carries most of the gain.
+* **Not a clean sweep:** the longer-trained shipped model remains competitive in the city (lower
+  RLF and ping-pong). The city models need more training and per-model thresholds.
 
 ### 21.16 Lessons learned
 

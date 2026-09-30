@@ -1,6 +1,7 @@
 # Location-aware handover: concept, findings and plan
 
-**Status: implemented as an opt-in model input (§12); closed-loop results in §13.** This
+**Status: implemented as an opt-in model input (§12); in closed loop, location context cuts
+handover failures by about half and outage by a third versus the same model without it (§13).** This
 document records:
 * the idea of feeding UE location to HandoverLLM, from triangulation / angle of arrival and a
   helper "Location xApp" in the RIC (§1–§6);
@@ -343,8 +344,9 @@ Feature sets:
    (`evaluate --mobility roads --shadowing spatial`):
    (a) report-only (today); (b) + position and heading; (c) + radio-map forecast;
    (d) + trajectory prior. Also test with realistic reporting (the fake gNB's `--realistic`).
-4. **Decide.** Proceed only if (b), (c) or (d) improves recall and outage without raising RLF or
-   ping-pong.
+4. **Result (§13):** the "all" and radio-map models improve HOF, outage and handover count over
+   the report-only model at equal budget, with lower RLF. Ping-pong stays high at the shipped
+   model's threshold; thresholds need tuning per model and the models need more training.
 5. **Testbed, shadow mode.** Run the Location xApp alongside the RAN, and measure position error
    (against GNSS or a survey) and forecast error. Then run the handover xApp with location
    tokens in shadow mode and compare its decisions with today's model.
@@ -451,7 +453,81 @@ carry no context, so a context model there behaves like one with all context unk
 
 ## 13. Closed-loop results in the city
 
-CLOSED_LOOP_RESULTS
+**Setup.** This is `experiments/location_closed_loop.py`.
+* **Training:** five models trained on the **same** city drives and labels (40 drives × 32 UEs,
+  368 624 samples), with the same architecture and budget (1 epoch). They differ only in context
+  tokens.
+* **Context source:** a location service learned from 20 separate history drives.
+* **Benchmark:** unseen city drives (seed 10000, 5 × 64 UEs × 60 s = 5.3 UE-hours), with
+  identical channels for every policy.
+* **Raw results:** `experiments/results/location_closed_loop*.json`.
+
+**Validation (teacher-forced, argmax):**
+
+| Model | Prompt tokens | Decision acc | HO recall |
+|---|---:|---:|---:|
+| base (report only) | 41 | 0.914 | 0.341 |
+| + position | 50 | 0.919 | 0.406 |
+| + radio map | 49 | 0.927 | 0.488 |
+| + trajectory prior | 46 | 0.918 | 0.392 |
+| all | 63 | 0.927 | 0.482 |
+
+**Closed loop, threshold 0.35 (the shipped model's operating point):**
+
+| Policy | HO/UE/min | Ping-pong % | RLF/UE/min | HOF/UE/min | SE b/s/Hz | Outage % |
+|---|---:|---:|---:|---:|---:|---:|
+| A3 (1 dB, 200 ms) | 13.23 | 28.4 | 0.000 | 0.197 | 2.880 | 0.82 |
+| A3 (2 dB, 300 ms) | 7.32 | 8.3 | 0.019 | 0.528 | 2.851 | 1.83 |
+| A3 (3 dB, 500 ms) | 4.08 | 1.6 | 0.488 | 0.872 | 2.783 | 4.06 |
+| Shipped model (original sim, 2 epochs) | 8.99 | 14.8 | 0.003 | 0.147 | 2.880 | 0.82 |
+| City model: base | 11.34 | 31.9 | 0.062 | 0.428 | 2.864 | 1.41 |
+| City model: + position | 10.17 | 32.7 | 0.013 | 0.419 | 2.868 | 1.28 |
+| City model: + radio map | 8.91 | 27.3 | 0.009 | 0.219 | 2.879 | 0.87 |
+| City model: + trajectory | 10.28 | 31.1 | 0.091 | 0.231 | 2.866 | 1.22 |
+| City model: all | 8.63 | 28.8 | 0.034 | 0.163 | 2.879 | 0.83 |
+| Teacher (non-causal) | 5.91 | 6.3 | 0.000 | 0.000 | 2.899 | 0.25 |
+
+**Closed loop, higher thresholds** (the city models hand over too eagerly at 0.35):
+
+| Policy | HO/UE/min | Ping-pong % | RLF/UE/min | HOF/UE/min | SE b/s/Hz | Outage % |
+|---|---:|---:|---:|---:|---:|---:|
+| City base, 0.5 | 7.59 | 18.9 | 0.078 | 0.228 | 2.867 | 1.18 |
+| **City all, 0.5** | **6.19** | 17.1 | 0.038 | **0.109** | **2.876** | **0.78** |
+| City base, 0.6 | 5.93 | 10.7 | 0.088 | 0.216 | 2.859 | 1.31 |
+| City all, 0.6 | 5.17 | 10.3 | 0.069 | 0.066 | 2.871 | 0.85 |
+| Shipped model, 0.5 | 5.80 | 5.4 | 0.044 | 0.425 | 2.852 | 1.68 |
+
+**What this shows:**
+* **Location context works in closed loop.** With identical data and training budget, the
+  "all" model beats the report-only model at every threshold:
+  * at 0.35: HOF −62 %, outage −41 %, handovers −24 %, RLF −45 %, higher SE;
+  * at 0.5: HOF −52 %, outage −34 %, RLF −51 %, handovers −18 %.
+* **The radio map carries most of the gain,** as the learnability study predicted (§9).
+  Position alone mainly lowers RLF. The trajectory prior roughly halves HOF but raised RLF at
+  0.35.
+* **Against A3 at 2 dB,** "all" at threshold 0.5 makes 15 % fewer handovers, has 79 % fewer HOFs,
+  57 % less outage and higher SE. It is worse on ping-pong (17 % vs 8 %) and RLF (0.038 vs 0.019).
+  Against aggressive A3 at 1 dB, it has half the handovers, fewer ping-pongs and HOFs, and less
+  outage at equal SE, but more RLF (0.038 vs 0).
+* **Not a clean sweep.** The shipped model, trained on the original simulator with 3× the
+  training steps, generalises well to the city. At 0.35 it is on par with "all" for SE and
+  outage, with lower RLF (0.003) and ping-pong (14.8 %); "all" wins on HOF at 0.5 and 0.6. The
+  city models are under-trained (1 epoch, chosen for time) and run at a threshold tuned for
+  another model.
+* **Caveats:**
+  * one benchmark seed (5 drives);
+  * one training run per variant;
+  * simulated positions (10 m error, no tracking filter);
+  * map and route statistics from simulated A3 history drives in the same simulated city.
+
+**Next:**
+1. Train the city models longer (2+ epochs, the full 60-drive corpus).
+2. Tune the threshold per model.
+3. Add a second benchmark seed.
+4. Add model-side hysteresis against ping-pong.
+5. Derive position from simulated AoA/TA with a tracking filter.
+
+The ablation already shows the direction clearly: context tokens help.
 
 ## Appendix: experiment scripts
 
