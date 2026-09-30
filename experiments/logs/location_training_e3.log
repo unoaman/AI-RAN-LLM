@@ -1,0 +1,100 @@
+== base
+03:23:56 location service: radio-map coverage 22%
+03:23:56 training base
+model: 0.85M params | train 350193 | val 18431 | device cpu
+epoch 1 step 400/4104 loss 0.9431 lr 9.78e-04 (646s)
+epoch 1 step 800/4104 loss 0.8226 lr 9.74e-04 (1289s)
+epoch 1 step 1200/4104 loss 0.8012 lr 8.97e-04 (1924s)
+epoch 1 val: answer_loss 0.3361, decision_acc 0.9157, ho_recall 0.3345
+saved checkpoints/city_base_e3.pt (epoch 1)
+epoch 2 step 1600/4104 loss 0.7934 lr 7.77e-04 (2605s)
+epoch 2 step 2000/4104 loss 0.7871 lr 6.28e-04 (3250s)
+epoch 2 step 2400/4104 loss 0.7440 lr 4.67e-04 (3907s)
+epoch 2 val: answer_loss 0.2838, decision_acc 0.9290, ho_recall 0.5331
+saved checkpoints/city_base_e3.pt (epoch 2)
+epoch 3 step 2800/4104 loss 0.7641 lr 3.13e-04 (4599s)
+epoch 3 step 3200/4104 loss 0.7368 lr 1.84e-04 (5239s)
+epoch 3 step 3600/4104 loss 0.7428 lr 9.30e-05 (5882s)
+epoch 3 step 4000/4104 loss 0.7457 lr 5.19e-05 (6525s)
+epoch 3 val: answer_loss 0.2618, decision_acc 0.9375, ho_recall 0.5826
+saved checkpoints/city_base_e3.pt (epoch 3)
+== position
+03:23:56 location service: radio-map coverage 22%
+03:23:56 training position
+model: 0.86M params | train 350193 | val 18431 | device cpu
+epoch 1 step 400/4104 loss 1.0174 lr 9.78e-04 (692s)
+epoch 1 step 800/4104 loss 0.9331 lr 9.74e-04 (1382s)
+epoch 1 step 1200/4104 loss 0.9058 lr 8.97e-04 (2068s)
+epoch 1 val: answer_loss 0.3145, decision_acc 0.9206, ho_recall 0.4618
+saved checkpoints/city_position_e3.pt (epoch 1)
+epoch 2 step 1600/4104 loss 0.8624 lr 7.77e-04 (2799s)
+epoch 2 step 2000/4104 loss 0.8367 lr 6.28e-04 (3506s)
+epoch 2 step 2400/4104 loss 0.8127 lr 4.67e-04 (4198s)
+epoch 2 val: answer_loss 0.2791, decision_acc 0.9333, ho_recall 0.4947
+saved checkpoints/city_position_e3.pt (epoch 2)
+epoch 3 step 2800/4104 loss 0.8066 lr 3.13e-04 (4939s)
+epoch 3 step 3200/4104 loss 0.8073 lr 1.84e-04 (5661s)
+epoch 3 step 3600/4104 loss 0.7855 lr 9.30e-05 (6387s)
+epoch 3 step 4000/4104 loss 0.7767 lr 5.19e-05 (7030s)
+epoch 3 val: answer_loss 0.2581, decision_acc 0.9403, ho_recall 0.5654
+saved checkpoints/city_position_e3.pt (epoch 3)
+== radio_map
+03:23:56 location service: radio-map coverage 22%
+03:23:56 training radio_map
+model: 0.86M params | train 350193 | val 18431 | device cpu
+epoch 1 step 400/4104 loss 1.0201 lr 9.78e-04 (707s)
+epoch 1 step 800/4104 loss 0.8974 lr 9.74e-04 (1406s)
+epoch 1 step 1200/4104 loss 0.8906 lr 8.97e-04 (2103s)
+epoch 1 val: answer_loss 0.3110, decision_acc 0.9273, ho_recall 0.4836
+saved checkpoints/city_radio_map_e3.pt (epoch 1)
+epoch 2 step 1600/4104 loss 0.8526 lr 7.77e-04 (2829s)
+epoch 2 step 2000/4104 loss 0.8382 lr 6.28e-04 (3537s)
+epoch 2 step 2400/4104 loss 0.8283 lr 4.67e-04 (4241s)
+epoch 2 val: answer_loss 0.2794, decision_acc 0.9329, ho_recall 0.5922
+saved checkpoints/city_radio_map_e3.pt (epoch 2)
+epoch 3 step 2800/4104 loss 0.8018 lr 3.13e-04 (4986s)
+epoch 3 step 3200/4104 loss 0.8198 lr 1.84e-04 (5673s)
+epoch 3 step 3600/4104 loss 0.8095 lr 9.30e-05 (6368s)
+epoch 3 step 4000/4104 loss 0.8029 lr 5.19e-05 (6987s)
+epoch 3 val: answer_loss 0.2613, decision_acc 0.9416, ho_recall 0.5862
+saved checkpoints/city_radio_map_e3.pt (epoch 3)
+== trajectory
+03:23:56 location service: radio-map coverage 22%
+03:23:56 training trajectory
+model: 0.86M params | train 350193 | val 18431 | device cpu
+epoch 1 step 400/4104 loss 0.9457 lr 9.78e-04 (693s)
+epoch 1 step 800/4104 loss 0.8289 lr 9.74e-04 (1386s)
+epoch 1 step 1200/4104 loss 0.7873 lr 8.97e-04 (2070s)
+epoch 1 val: answer_loss 0.3292, decision_acc 0.9173, ho_recall 0.4406
+saved checkpoints/city_trajectory_e3.pt (epoch 1)
+epoch 2 step 1600/4104 loss 0.7844 lr 7.77e-04 (2799s)
+epoch 2 step 2000/4104 loss 0.7493 lr 6.28e-04 (3502s)
+epoch 2 step 2400/4104 loss 0.7399 lr 4.67e-04 (4193s)
+epoch 2 val: answer_loss 0.2805, decision_acc 0.9328, ho_recall 0.5195
+saved checkpoints/city_trajectory_e3.pt (epoch 2)
+epoch 3 step 2800/4104 loss 0.7147 lr 3.13e-04 (4940s)
+epoch 3 step 3200/4104 loss 0.7256 lr 1.84e-04 (5628s)
+epoch 3 step 3600/4104 loss 0.7160 lr 9.30e-05 (6318s)
+epoch 3 step 4000/4104 loss 0.7165 lr 5.19e-05 (6942s)
+epoch 3 val: answer_loss 0.2593, decision_acc 0.9407, ho_recall 0.5664
+saved checkpoints/city_trajectory_e3.pt (epoch 3)
+== all
+03:23:56 location service: radio-map coverage 22%
+03:23:56 training all
+model: 0.86M params | train 350193 | val 18431 | device cpu
+epoch 1 step 400/4104 loss 1.0929 lr 9.78e-04 (935s)
+epoch 1 step 800/4104 loss 0.9716 lr 9.74e-04 (1844s)
+epoch 1 step 1200/4104 loss 0.9361 lr 8.97e-04 (2753s)
+epoch 1 val: answer_loss 0.3098, decision_acc 0.9280, ho_recall 0.4391
+saved checkpoints/city_all_e3.pt (epoch 1)
+epoch 2 step 1600/4104 loss 0.8688 lr 7.77e-04 (3741s)
+epoch 2 step 2000/4104 loss 0.8546 lr 6.28e-04 (4674s)
+epoch 2 step 2400/4104 loss 0.8565 lr 4.67e-04 (5596s)
+epoch 2 val: answer_loss 0.2720, decision_acc 0.9371, ho_recall 0.5422
+saved checkpoints/city_all_e3.pt (epoch 2)
+epoch 3 step 2800/4104 loss 0.8098 lr 3.13e-04 (6586s)
+epoch 3 step 3200/4104 loss 0.8106 lr 1.84e-04 (7361s)
+epoch 3 step 3600/4104 loss 0.7972 lr 9.30e-05 (8076s)
+epoch 3 step 4000/4104 loss 0.8045 lr 5.19e-05 (8803s)
+epoch 3 val: answer_loss 0.2551, decision_acc 0.9432, ho_recall 0.6119
+saved checkpoints/city_all_e3.pt (epoch 3)
