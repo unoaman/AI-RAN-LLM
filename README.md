@@ -200,7 +200,7 @@ A few things to watch for with real data:
 | `ai_ran_llm/city.py` | Opt-in "city" model for the simulator: road-network mobility with popular, repeated routes and stops, and location-tied (spatial) shadowing shared by all UEs and drives. `--mobility roads --shadowing spatial`. Defaults keep the original simulator bit-for-bit. |
 | `ai_ran_llm/location.py` | Optional location context for the model: position track, radio map, handover-sequence mining (Location xApp logic), `LocationAwarePolicy`. Enabled with `gen-data --use-position --use-radio-map --use-trajectory`. |
 | `experiments/` | Location / radio-map / trajectory learnability studies (`docs/LOCATION_AWARE_HANDOVER.md`). |
-| `integrations/` | Example cell maps and RAN configs for OCUDU/srsRAN, OAI and FlexRIC, the O-RAN SC RIC xApp, and a RAN-side bridge agent template. |
+| `integrations/` | Example cell maps and RAN configs for OCUDU/srsRAN, OAI and FlexRIC, the O-RAN SC RIC xApp, the FlexRIC bridge xApp (`flexric/llm_bridge`), the OAI + FlexRIC Docker testbed (`flexric/testbed`), and a RAN-side bridge agent template. |
 
 ## Quick start
 
@@ -413,8 +413,9 @@ OAI gNB (E2 agent) ══E2AP══▶ FlexRIC nearRT-RIC ══▶ llm_bridge x
   * RC REPORT Style 1 "message copy" includes **MeasurementReport**. Style 5 gives the UE
     context and the neighbour relation table. CONTROL Style 3 is **handover control**.
   * E2SM-KPM is not enough on its own: it has no per-UE neighbour RSRP.
-* **What you add:** a thin C xApp, `llm_bridge`, on FlexRIC's SDK. Start from FlexRIC's
-  `xapp_rc_handover.c`. The bridge:
+* **The bridge:** a thin C xApp, `llm_bridge` (`integrations/flexric/llm_bridge`), on FlexRIC's
+  SDK. It:
+  * polls RC Style 5 for each UE's E2 identity and serving cell (`ue_context`);
   * decodes the copied MeasurementReports and sends `meas_report` JSON lines to `ran-xapp`;
   * turns `ho_command`s into RC Handover Control with the model's target NR-CGI.
 
@@ -425,7 +426,9 @@ OAI gNB (E2 agent) ══E2AP══▶ FlexRIC nearRT-RIC ══▶ llm_bridge x
   control works in your lab.
 * **Build notes:**
   * Build FlexRIC and OAI with the **same `E2AP_VERSION` / `KPM_VERSION`**.
-  * FlexRIC needs gcc-13.
+  * FlexRIC needs gcc-12 or newer (its README recommends 13) and the `mouse07410` asn1c.
+  * OAI's copied MeasurementReport carries no UE ID, so the bridge attributes reports only when
+    one UE is on the CU.
   * Enable periodic measurement reporting and configure the neighbour list
     (`integrations/oai/measurement.example.conf`, `integrations/flexric/`).
 
@@ -434,13 +437,29 @@ OAI gNB (E2 agent) ══E2AP══▶ FlexRIC nearRT-RIC ══▶ llm_bridge x
 ./nr-softmodem -O cu.conf ...                                    # OAI with e2_agent { near_ric_ip_addr; sm_dir }
 python -m ai_ran_llm ran-xapp --cells integrations/flexric/cells.example.json \
     --bridge 127.0.0.1:7000 --actuator bridge                    # shadow mode; add --live later
-./llm_bridge --xapp 127.0.0.1:7000                                # the bridge xApp (docs/RAN_INTEGRATION.md §9.4)
+LLM_BRIDGE_XAPP=127.0.0.1:7000 ./llm_bridge                       # the bridge xApp (docs/RAN_INTEGRATION.md §9.4)
 ```
 
-**Status:** the FlexRIC and OAI facts come from their documentation and example xApps. The
-Python side was checked with this cell map and a test client standing in for the bridge. The
-`llm_bridge` xApp itself is a design with a code skeleton (§9.4): it is not in this repository
-and has not been run.
+**`llm_bridge` is implemented** (`integrations/flexric/llm_bridge`):
+
+* C on FlexRIC `d7a71285`, the commit OAI pins;
+* checked against OAI's E2 agent source;
+* offline C tests for RRC decoding, TS 38.133 conversion, NR-CGI encoding and UE tracking.
+
+**End-to-end testbed** (`integrations/flexric/testbed`, guide §9.7). `./run.sh all` starts,
+in Docker:
+
+* OAI's F1 RF-simulator setup: 5G core, CU, two DUs and an nrUE;
+* FlexRIC, `llm_bridge`, `ran-xapp`;
+* `ran-lab-drive`: OAI's software UE sends no MeasurementReports, so this relay drives a
+  virtual UE and reports for the real one. It also adjusts the real RF-simulator path loss.
+
+The model's decisions become real F1 handovers in the OAI CU via E2SM-RC, and the script checks
+every hop.
+
+**Status:** the testbed needs a host with kernel SCTP and has not yet been run end to end. On the
+development machine, which has no SCTP, the images build and the bridge's tests pass inside
+them.
 
 **Status.** The integration code is tested against fakes and the simulator only. OAI/srsRAN
 command syntax and E2 calls follow their documentation and example xApps. It has not been run
