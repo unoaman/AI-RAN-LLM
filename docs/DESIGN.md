@@ -779,6 +779,15 @@ embedding init in `train.train` (weights are tied with the output head).
 
 ---
 
+### 12.6 Optional location-context tokens
+
+`ObsConfig.use_position` / `use_radio_map` / `use_trajectory` (default off) append `<unk>` and the
+families L (distance ratio), S (radial speed), M (radio-map gain), P (next-cell probability) and
+N (route-history confidence) to the vocabulary, giving 447 tokens. Context tokens are inserted
+after the serving block and after each neighbour block, and the prompt grows to at most 63 tokens.
+Values come from `ai_ran_llm/location.py`; unknown values become `<unk>`. With the flags off,
+nothing changes. Full description: `docs/LOCATION_AWARE_HANDOVER.md` §12.
+
 ## 13. Model architecture
 
 File: `ai_ran_llm/model.py`, class `HandoverGPT` (nanoGPT-style decoder).
@@ -951,12 +960,13 @@ could be made asynchronous or cached (KV cache not implemented).
 
 | Command | Purpose | Main options (default) |
 |---|---|---|
-| `gen-data` | build a tokenised corpus | `--episodes 60 --ues 32 --steps 600 --seed 0 --out data/handover_corpus.npz`; `--from-drives NPZ…` build from drive files; `--serving logged\|replay` |
+| `gen-data` | build a tokenised corpus | `--episodes 60 --ues 32 --steps 600 --seed 0 --out data/handover_corpus.npz`; `--from-drives NPZ…` build from drive files; `--serving logged\|replay`; city flags `--mobility --shadowing --map-seed`; context `--use-position --use-radio-map --use-trajectory --location-service DIR` |
 | `train` | train HandoverGPT | `--data … --out checkpoints/handover_llm.pt --epochs 2 --batch-size 256 --lr 1e-3 --layers 4 --heads 4 --embd 128` |
-| `evaluate` | closed-loop benchmark vs A3 + teacher | `--ckpt … --episodes 5 --ues 64 --seed 10000 --ho-threshold 0.35 --json FILE` |
+| `evaluate` | closed-loop benchmark vs A3 + teacher | `--ckpt … --episodes 5 --ues 64 --seed 10000 --ho-threshold 0.35 --json FILE`; city flags; `--location-service DIR` for context models |
 | `infer` | decide for one JSON report | `REPORT.json` or `-` (built-in example), `--ckpt`, `--ho-threshold 0.35` |
 | `serve` | HTTP endpoint | `--host 0.0.0.0 --port 8080 --ho-threshold 0.35 --min-confidence 0.3` |
 | `export-raw` | raw drives + readable reports | `--episodes 1 --ues 32 --steps 600 --seed 0 --out data/raw` |
+| `build-location-service` | radio map + handover statistics from history drives | `--out DIR --drives 20 --ues 32 --seed 777 --pos-sigma 10` + city flags |
 | `export-jsonl` | chat-format SFT data | `--data … --out data/handover_sft.jsonl --limit N` |
 | `ran-xapp` | handover xApp against a real RAN | `--cells FILE\|sim`, sources `--bridge HOST:PORT\|off`, `--rrc-log FILE`, `--id-regex`, `--learn-id`, `--pci-regex`; `--actuator log\|bridge\|oai-telnet\|console\|command`; `--live`; `--ho-threshold 0.35 --min-confidence 0.3 --confirm 1 --hold-off-s 0 --a3-override-db 6`; `--audit ran_audit.jsonl` |
 | `fake-gnb` | simulated gNB on the bridge | `--xapp HOST:PORT --ues 16 --steps 600 --seed 10000 --realistic` |
@@ -1150,6 +1160,7 @@ AI-RAN-LLM/
 │   ├── config.py                 SimConfig, ObsConfig, ModelConfig
 │   ├── simulator.py              network, channel, mobility, reports, closed loop, KPIs, drive I/O
 │   ├── city.py                   opt-in city model: road mobility, spatial shadowing
+│   ├── location.py               location context: position track, radio map, handover-sequence mining
 │   ├── policies.py               A3, teacher, smoothed labels, OraclePolicy
 │   ├── dataset.py                labelled drives, corpus, raw export, SFT export
 │   ├── tokenizer.py              domain vocabulary, encode/decode/explain
@@ -1174,7 +1185,8 @@ AI-RAN-LLM/
 ├── tests/
 │   ├── test_pipeline.py          14 model / data / inference tests
 │   ├── test_ran.py               16 real-RAN integration tests
-│   └── test_city.py              5 city-model tests (incl. default-simulator fingerprint)
+│   ├── test_city.py              5 city-model tests (incl. default-simulator fingerprint)
+│   └── test_location.py          7 location-context tests
 ├── experiments/                  location / radio-map / trajectory learnability studies
 ├── integrations/
 │   ├── ocudu/                    cells.example.json, mobility.example.yml (OCUDU / srsRAN)
@@ -1219,6 +1231,12 @@ AI-RAN-LLM/
 **`city.py`:** `ROUTE_TYPES`, `Route`, `city_routes(sim)`, `road_mobility(n_ue, n_steps, rng, sim)`
 → (pos, speed, route_id), `shadow_fields(sim)`, `spatial_shadowing(pos, sim)`. `Episode.route_id`
 is set in road mode.
+
+**`location.py`:** `LocationConfig`, `position_track(ep, rng, cfg)`, `previous_cells(traj)`,
+`RadioMap.add/lookup/coverage`, `TransitionModel.add/probs/to_dict/from_dict`,
+`LocationService.build/save/load`, `compute_context(ep, t, obs, est, prev, service, cfg)`,
+`drop_context`, `LocationAwarePolicy`. `Observation.context` holds the arrays;
+`inference.empty_context`, `stack_observations` and `report_to_observation` carry them.
 
 ### 17.3 `policies.py`
 
@@ -1430,6 +1448,14 @@ Guard rails trade ping-pong for outage/RLF; the A3 override is free in-distribut
 * Cell ids limited to 0–63; real PCI/NR-CGI must be mapped externally.
 * HTTP server: no auth, TLS, rate limiting, or batching across requests.
 * Weight decay applies to all parameters (embeddings, LayerNorm) — simplification.
+
+**Location context**
+
+* Positions are simulated (true position + correlated error), not derived from AoA/TA.
+  Velocities are unfiltered differences of noisy positions.
+* The RAN integration's tracker does not yet fill context fields.
+* Radio map and route statistics come from simulated A3 history drives in the same simulated
+  city.
 
 **Real-RAN integration**
 
@@ -1664,7 +1690,22 @@ simulator upgrades"*.
    89 %), position +27 %, handover-sequence prior with no location +16 %, all combined +83 %. In
    the original simulator, the radio map and trajectory prior add little, as predicted.
 
-### 21.15 Lessons learned
+### 21.15 Location context in the model
+
+**User:** *"can you do changes for [the next step]: the model doesn't use location yet"*
+
+* **Implemented:**
+  * opt-in context tokens (§12.6) and `location.py`: position track, radio map, handover-sequence
+    mining, a service built from separate history drives, `LocationAwarePolicy`;
+  * context-aware corpus generation (10 % context dropout, `obs_cfg` stored in the corpus),
+    training that reads it, report-JSON context, CLI (`build-location-service`, `gen-data`
+    flags, `evaluate --location-service`), 7 tests.
+* **Checked:** the default corpus is still bit-identical; the shipped checkpoint is unaffected.
+* **Experiment:** `experiments/location_closed_loop.py` trains 5 models on identical city drives
+  (base, +position, +radio map, +trajectory, all) and benchmarks them in closed loop
+  (`docs/LOCATION_AWARE_HANDOVER.md` §13).
+
+### 21.16 Lessons learned
 
 1. Calibrate the simulator against a classical baseline *before* training anything.
 2. Per-sample accuracy is misleading for rare, partly unpredictable events; evaluate in
@@ -1698,6 +1739,7 @@ simulator upgrades"*.
 | HTTP request format = `reports.jsonl` format | exported reports can be sent straight to the endpoint | change both + README |
 | ran-bridge protocol `ai-ran-llm/ran-bridge/1` | RAN-side agents are written against it | add fields compatibly (optional); bump the version string for breaking changes |
 | Guard timers use report timestamps | mixed clocks silently block or allow handovers | keep every timer on `MeasReport.timestamp_s` |
+| Context tokens are appended and off by default | the shipped checkpoint (349 tokens, 41-token prompt) and corpus must keep working | add new input families at the end of the vocabulary, behind a flag; test that `HandoverTokenizer()` stays 349 / 41 |
 | Default simulator fingerprint (`test_default_simulator_unchanged`) | corpus reproducibility and every published number | new simulator features must be opt-in and must not consume the default random stream |
 | Fake gNB with guards off ≡ offline benchmark | the integration regression test (`test_fake_gnb_end_to_end_equals_offline_policy`) | if you change decision logic, change it in `decide_reports` so both paths share it |
 
@@ -1741,9 +1783,11 @@ simulator upgrades"*.
 
 ## 23. Testing
 
-`pytest -q` — 35 tests (≈ 10 s): 14 in `tests/test_pipeline.py`, 16 in `tests/test_ran.py`,
+`pytest -q` — 42 tests (≈ 10 s): 14 in `tests/test_pipeline.py`, 16 in `tests/test_ran.py`,
 5 in `tests/test_city.py` (default-simulator fingerprint, spatial field statistics, place-tied
-shadowing across drives, road mobility, unknown-model errors).
+shadowing across drives, road mobility, unknown-model errors), and 7 in `tests/test_location.py`
+(token layouts and quantisers, radio map and transition model, service save/load, context values,
+context corpus + training, closed-loop policy and report API).
 
 `tests/test_pipeline.py`:
 

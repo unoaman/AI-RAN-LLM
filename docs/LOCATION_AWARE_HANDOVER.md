@@ -1,13 +1,13 @@
 # Location-aware handover: concept, findings and plan
 
-**Status: concept plus simulator evidence; the handover model does not use location yet.**
-This document records:
+**Status: implemented as an opt-in model input (§12); closed-loop results in §13.** This
+document records:
 * the idea of feeding UE location to HandoverLLM, from triangulation / angle of arrival and a
   helper "Location xApp" in the RIC (§1–§6);
 * the idea of adding trajectory mining / predictive tracking (§7);
-* the simulator upgrades that make both measurable, now implemented as the opt-in "city" model
-  (§8);
-* the measured results (§3, §9) and what remains to validate (§10).
+* the simulator upgrades that make both measurable: the opt-in "city" model (§8);
+* the learnability results (§3, §9) and the validation plan (§10);
+* the implementation in the model (§12) and the closed-loop results (§13).
 
 Related: `docs/DESIGN.md` (model, training), `docs/RAN_INTEGRATION.md` (xApp, RIC interfaces).
 
@@ -339,7 +339,7 @@ Feature sets:
 
    Still open: deriving position from simulated AoA / TA measurements instead of adding noise to
    the true position.
-3. **Next — train four models** and compare them in closed loop on the same city benchmark drives
+3. **Done (§12–§13) — train the models** and compare them in closed loop on the same city benchmark drives
    (`evaluate --mobility roads --shadowing spatial`):
    (a) report-only (today); (b) + position and heading; (c) + radio-map forecast;
    (d) + trajectory prior. Also test with realistic reporting (the fake gNB's `--realistic`).
@@ -366,9 +366,98 @@ against today's model (§10, step 3).
 
 ---
 
+## 12. Implementation: location context in the model
+
+The model can now take location, radio-map and trajectory inputs as **optional context tokens**.
+Everything is opt-in: with the flags off, the vocabulary (349 tokens), the prompt (41 tokens),
+the shipped checkpoint and the committed corpus are unchanged (the corpus is verified
+bit-identical).
+
+### 12.1 Tokens
+
+`ObsConfig.use_position`, `use_radio_map` and `use_trajectory` switch on context tokens. They are
+appended to the vocabulary, so base token ids never move, giving 447 tokens with any flag on.
+They are also inserted after the serving block and after every neighbour block:
+
+```
+<srv> C9 R… R… R… R… R…  [S N]  <nbr> C5 D… D… D… D… D…  [L S  M M  P]  <nbr> …  <ans>
+       serving history    ^ctx         neighbour history    ^ctx per neighbour
+```
+
+| Token | Flag | Meaning | Bins |
+|---|---|---|---|
+| `S±n` after serving | position | radial speed to the serving cell (m/s, + = moving away) | 4 m/s, ±32 |
+| `N0..N6` after serving | trajectory | how much handover history the next-cell estimate rests on | log2 of count |
+| `L±n` per neighbour | position | log10(distance to serving / distance to neighbour) × 10 | 0.1 decade, ±1 |
+| `S±n` per neighbour | position | radial speed to the neighbour | 4 m/s, ±32 |
+| `M±n` `M±n` per neighbour | radio map | map RSRP(neighbour) − RSRP(serving) now and 1 s ahead along the heading | 1 dB, ±20 |
+| `P0..P10` per neighbour | trajectory | P(next serving cell = this neighbour \| previous, current) | 10 % |
+| `<unk>` | any | value unknown (no position, unmapped square, no history) | — |
+
+With all flags on, the prompt is 63 tokens and corpus rows are 79 tokens long.
+
+### 12.2 Where the values come from (`ai_ran_llm/location.py`)
+
+| Component | Role | Simulator stand-in / real-RAN source |
+|---|---|---|
+| `position_track` | UE position estimate | true position + AR(1) error (10 m, ≈ 1 s memory) / AoA, TA/RTT, beam, GNSS fusion |
+| `RadioMap` | mean reported RSRP per (cell, 20 m square) over past traffic | reports at estimated positions from history drives / RIC report logs |
+| `TransitionModel` | next-cell probabilities from sequences of serving cells, backing off from (previous, current) to (current) | serving-cell sequences under A3 in history drives / handover logs |
+| `LocationService` | map + statistics, saved as `radio_map.npz` + `service.json` | `ai_ran_llm build-location-service` |
+| `compute_context` | all context values for one report | — |
+| `LocationAwarePolicy` | runs a context model in closed loop (`run_policy`, `evaluate`) | — |
+
+**No leakage.** The service is built from **separate history drives** (seed 777), never from the
+drives used for training (seed 0) or evaluation (seed 10000), so no UE's own future appears in
+its inputs.
+
+**Robustness.** 10 % of training samples have their context hidden (all `<unk>`), so the model
+also learns to decide without it. A model given no context degrades towards the report-only
+behaviour instead of failing.
+
+**Simplification.** Velocity and radial speed are differences of noisy positions over 0.8 s,
+with no tracking filter. With 10 m error this is noisy (about ±14 m/s). A real Location xApp
+would run a Kalman or particle filter.
+
+### 12.3 Using it
+
+```bash
+# 1. learn the radio map + handover statistics from history drives (city model)
+python -m ai_ran_llm build-location-service --mobility roads --shadowing spatial --out data/city/location_service
+# 2. corpus with context (any combination of the three flags)
+python -m ai_ran_llm gen-data --mobility roads --shadowing spatial --use-position --use-radio-map \
+    --use-trajectory --location-service data/city/location_service --out data/city/corpus_all.npz
+# 3. train (the corpus carries its ObsConfig; the checkpoint records it)
+python -m ai_ran_llm train --data data/city/corpus_all.npz --out checkpoints/city_all.pt
+# 4. closed-loop benchmark in the city
+python -m ai_ran_llm evaluate --ckpt checkpoints/city_all.pt --mobility roads --shadowing spatial \
+    --location-service data/city/location_service
+# all of it, five variants: PYTHONPATH=. python experiments/location_closed_loop.py
+```
+
+**Real RAN.** A Location xApp adds the values to the report JSON (the xApp request and ran-bridge
+report format). `report_to_observation` reads them; missing fields become `<unk>`:
+
+```json
+{"serving_cell": 9, "serving_rsrp": [...], "sinr_db": -1.0,
+ "context": {"radial_speed": 6.5, "next_count": 40},
+ "neighbors": [{"cell_id": 4, "rsrp": [...],
+                "context": {"dist_ratio": 0.21, "radial_speed": -9.0, "map_gain_now": 2.5,
+                            "map_gain_ahead": 5.0, "next_prob": 0.8}}]}
+```
+
+The RAN integration's tracker (`ai_ran_llm/ran`) does not fill these fields yet. Its reports
+carry no context, so a context model there behaves like one with all context unknown.
+
+## 13. Closed-loop results in the city
+
+CLOSED_LOOP_RESULTS
+
 ## Appendix: experiment scripts
 
 * `experiments/location_learnability.py`: the §3 position study (the script below).
+* `experiments/location_closed_loop.py`: the §13 closed-loop study (service, 5 corpora, 5 models,
+  benchmark). Resumable; it takes about 1.5 h on 4 CPU cores.
 * `experiments/location_trajectory_learnability.py`: the §9 study (location, radio map and
   trajectory prior, original simulator vs city). Run with seeds 5, 6 and 7.
 
