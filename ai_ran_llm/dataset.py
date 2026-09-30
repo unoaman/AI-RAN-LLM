@@ -115,24 +115,46 @@ def iter_labelled_drives(n_episodes: int, n_ue: int, n_steps: int, rng: np.rando
 def generate_dataset(n_episodes: int, n_ue: int = 32, n_steps: int = 600, seed: int = 0,
                      sim: SimConfig | None = None, obs_cfg: ObsConfig | None = None,
                      block_size: int = 64, easy_keep_prob: float = 0.1,
-                     verbose: bool = True, drives: list[str] | None = None, serving: str = "logged") -> dict:
-    """Returns {"tokens": (N, block_size) int64 padded with <pad>, "prompt_len": int}.
+                     verbose: bool = True, drives: list[str] | None = None, serving: str = "logged",
+                     location=None) -> dict:
+    """Returns {"tokens": (N, block_size) int64 padded with <pad>, "prompt_len": int}
+    (plus "obs_cfg" as JSON when location context is enabled).
 
     Labels come from the look-ahead teacher (`label_decision`); see
     `iter_labelled_drives` for how reports are produced (simulated, or from the
     `drives` files) and subsampled.
+
+    With ``obs_cfg.uses_context``, every report also gets location context
+    (``ai_ran_llm.location.compute_context``) from `location`, a LocationService
+    built from separate history drives; position-only context works without it.
+    A share of samples (``LocationConfig.context_dropout``) has its context hidden
+    so the model also learns to decide without it. The context uses its own
+    random generators, so the drives and labels are the same as without context.
     """
     sim = sim or SimConfig()
     obs_cfg = obs_cfg or ObsConfig()
     tok = HandoverTokenizer(obs_cfg)
+    block_size = max(block_size, tok.prompt_len + 16)       # room for the longest answer
     rng = np.random.default_rng(seed)
     rows, n_ho = [], 0
+    if obs_cfg.uses_context:
+        from .location import LocationConfig, compute_context, drop_context, position_track, previous_cells
+        loc_cfg = location.cfg if location is not None else LocationConfig()
+        if (obs_cfg.use_radio_map or obs_cfg.use_trajectory) and location is None:
+            raise ValueError("radio-map / trajectory context needs a LocationService (build-location-service)")
 
     n_total = len(drives) if drives is not None else n_episodes
-    for e, _, _, _, steps in iter_labelled_drives(n_episodes, n_ue, n_steps, rng, sim, obs_cfg,
-                                                  easy_keep_prob, drives, serving):
+    for e, ep, _, traj, steps in iter_labelled_drives(n_episodes, n_ue, n_steps, rng, sim, obs_cfg,
+                                                      easy_keep_prob, drives, serving):
+        if obs_cfg.uses_context:
+            est = position_track(ep, np.random.default_rng([seed, e, 7]), loc_cfg)
+            prev = previous_cells(traj)
+            drop_rng = np.random.default_rng([seed, e, 8])
         for st in steps:
             obs = st.obs
+            if obs_cfg.uses_context:
+                ctx = compute_context(ep, st.t, obs, est, prev[:, st.t], location, loc_cfg)
+                obs.context = drop_context(ctx, drop_rng.uniform(size=ep.n_ue) < loc_cfg.context_dropout)
             prompts = tok.encode_prompts(obs)
             for u in np.nonzero(st.keep)[0]:
                 ans = tok.encode_answer(int(st.target[u]), float(st.gain[u]), obs.serving_hist[u],
@@ -149,7 +171,10 @@ def generate_dataset(n_episodes: int, n_ue: int = 32, n_steps: int = 600, seed: 
         raise ValueError("no samples: drives are shorter than the report history + teacher look-ahead")
     tokens = np.stack(rows)
     rng.shuffle(tokens)
-    return {"tokens": tokens, "prompt_len": np.int64(tok.prompt_len)}
+    out = {"tokens": tokens, "prompt_len": np.int64(tok.prompt_len)}
+    if obs_cfg.uses_context:                 # the default corpus format stays unchanged
+        out["obs_cfg"] = np.array(json.dumps(asdict(obs_cfg)))
+    return out
 
 
 def export_raw(out_dir: str, n_episodes: int = 1, n_ue: int = 32, n_steps: int = 600, seed: int = 0,
@@ -224,19 +249,36 @@ def export_raw(out_dir: str, n_episodes: int = 1, n_ue: int = 32, n_steps: int =
     return {"reports": n_reports, "in_corpus": n_kept}
 
 
+_CTX_TEXT = {
+    "L": lambda v: f"log-distance ratio serving/neighbour {int(v) / 10:+.1f}",
+    "S": lambda v: f"radial speed {int(v) * 4:+d} m/s",
+    "M": lambda v: f"radio-map gain {int(v):+d} dB",
+    "P": lambda v: f"next-cell probability {int(v) * 10}%",
+    "N": lambda v: f"route-history confidence {int(v)}/6",
+}
+
+
+def _ctx_text(tokens) -> str:
+    parts = ["unknown" if x == "<unk>" else _CTX_TEXT[x[0]](x[1:]) for x in tokens]
+    return f" [{'; '.join(parts)}]" if parts else ""
+
+
 def prompt_to_text(tok: HandoverTokenizer, prompt_ids) -> str:
     """Render a tokenised report as plain English (for general-purpose LLM fine-tuning)."""
     t = [tok.itos[int(i)] for i in prompt_ids]
     h = tok.obs_cfg.hist_len
     speed_bin = int(t[2][1:])
+    i = 7 + h
+    j = i + tok.serving_extra
     lines = [f"UE speed {speed_bin * 10}-{speed_bin * 10 + 9} km/h, serving SINR {t[4][1:]} dB.",
              f"Serving cell {t[6][1:]}, L3-filtered RSRP history (dBm, oldest first): "
-             + ", ".join(x[1:] for x in t[7:7 + h]) + "."]
-    i = 7 + h
+             + ", ".join(x[1:] for x in t[7:7 + h]) + "." + _ctx_text(t[i:j])]
+    i = j
     while i < len(t) and t[i] == "<nbr>":
+        j = i + 2 + h + tok.neighbour_extra
         lines.append(f"Neighbour cell {t[i + 1][1:]}, RSRP relative to serving (dB): "
-                     + ", ".join(x[1:] for x in t[i + 2:i + 2 + h]) + ".")
-        i += 2 + h
+                     + ", ".join(x[1:] for x in t[i + 2:i + 2 + h]) + "." + _ctx_text(t[i + 2 + h:j]))
+        i = j
     return "\n".join(lines)
 
 

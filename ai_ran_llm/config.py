@@ -50,6 +50,15 @@ class ObsConfig:
     # Both default to off: in our tests neither made labels more learnable (see README).
     label_window: int = 0           # HO label if the teacher would hand over within this many steps
     label_confirm_horizon: int = 0  # ...and the target still beats serving on average over this many steps
+    # Location context (docs/LOCATION_AWARE_HANDOVER.md §12). Off = the original 41-token prompt and
+    # 349-token vocabulary; on = extra tokens per report, filled by ai_ran_llm.location.
+    use_position: bool = False      # distance ratio + radial speed per cell (needs UE position)
+    use_radio_map: bool = False     # radio-map forecast gain per neighbour, now and ahead
+    use_trajectory: bool = False    # next-cell probability mined from past handover sequences
+
+    @property
+    def uses_context(self) -> bool:
+        return self.use_position or self.use_radio_map or self.use_trajectory
 
 
 @dataclass

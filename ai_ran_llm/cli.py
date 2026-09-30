@@ -22,6 +22,17 @@ def main(argv=None):
                         "instead of simulating; see README 'Using real network data'")
     g.add_argument("--serving", choices=["logged", "replay"], default="logged",
                    help="with --from-drives: use the logged serving cells, or replay simulated policies")
+    _context_args(g)
+
+    ls = sub.add_parser("build-location-service",
+                        help="learn a radio map + handover-sequence statistics from history drives")
+    _city_args(ls)
+    ls.add_argument("--out", default="data/location_service")
+    ls.add_argument("--drives", type=int, default=20)
+    ls.add_argument("--ues", type=int, default=32)
+    ls.add_argument("--steps", type=int, default=600)
+    ls.add_argument("--seed", type=int, default=777, help="history drives (keep different from gen-data/evaluate)")
+    ls.add_argument("--pos-sigma", type=float, default=10.0, help="positioning error std per axis (m)")
 
     t = sub.add_parser("train", help="train HandoverGPT")
     t.add_argument("--data", default="data/handover_corpus.npz")
@@ -42,6 +53,7 @@ def main(argv=None):
     e.add_argument("--ho-threshold", type=float, default=0.35,
                    help="hand over when P(handover to best neighbour) >= this")
     e.add_argument("--json", help="also write results to this file")
+    e.add_argument("--location-service", help="for models with location context: radio map + route statistics")
 
     i = sub.add_parser("infer", help="decide for one JSON measurement report")
     i.add_argument("report", help="path to a JSON report, or '-' for the built-in example")
@@ -130,11 +142,25 @@ def main(argv=None):
 
     if a.cmd == "gen-data":
         from .dataset import generate_dataset
-        d = generate_dataset(a.episodes, a.ues, a.steps, a.seed, sim=_sim(a),
-                             drives=sorted(a.from_drives) if a.from_drives else None, serving=a.serving)
+        from .config import ObsConfig
+        from .location import LocationService
+        obs_cfg = ObsConfig(use_position=a.use_position, use_radio_map=a.use_radio_map,
+                            use_trajectory=a.use_trajectory)
+        service = LocationService.load(a.location_service) if a.location_service else None
+        d = generate_dataset(a.episodes, a.ues, a.steps, a.seed, sim=_sim(a), obs_cfg=obs_cfg,
+                             drives=sorted(a.from_drives) if a.from_drives else None, serving=a.serving,
+                             location=service)
         os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
         np.savez_compressed(a.out, **d)
         print(f"wrote {len(d['tokens'])} samples to {a.out}")
+
+    elif a.cmd == "build-location-service":
+        from .location import LocationConfig, LocationService
+        svc = LocationService.build(_sim(a), a.drives, a.ues, a.steps, a.seed,
+                                    LocationConfig(pos_sigma_m=a.pos_sigma), verbose=True)
+        svc.save(a.out)
+        print(f"wrote {a.out}/ (radio map coverage {svc.radio_map.coverage():.0%}, "
+              f"{sum(sum(v.values()) for v in svc.transitions.t2.values())} handovers mined)")
 
     elif a.cmd == "train":
         from .config import ModelConfig
@@ -147,8 +173,14 @@ def main(argv=None):
         from .evaluate import benchmark, default_policies, format_table
         from .inference import HandoverLLM
         llm = HandoverLLM.load(a.ckpt)
-        res = benchmark(default_policies(llm, llm.tok.obs_cfg, a.ho_threshold), a.episodes, a.ues, seed=a.seed,
-                        sim=_sim(a))
+        pols = default_policies(llm, llm.tok.obs_cfg, a.ho_threshold)
+        if llm.tok.obs_cfg.uses_context:
+            from .location import LocationAwarePolicy, LocationService
+            svc = LocationService.load(a.location_service) if a.location_service else None
+            if svc is None and (llm.tok.obs_cfg.use_radio_map or llm.tok.obs_cfg.use_trajectory):
+                raise SystemExit("this model uses radio-map / trajectory context: pass --location-service")
+            pols["HandoverLLM"] = lambda: LocationAwarePolicy(llm, svc, a.ho_threshold)
+        res = benchmark(pols, a.episodes, a.ues, seed=a.seed, sim=_sim(a))
         print(format_table(res))
         if a.json:
             with open(a.json, "w") as f:
@@ -218,6 +250,14 @@ def _city_args(p):
     c.add_argument("--shadowing", default="per_ue", choices=["per_ue", "spatial"],
                    help="per_ue: random along each path; spatial: fixed field per cell, tied to places")
     c.add_argument("--map-seed", type=int, default=1, help="which city (roads, routes, shadowing field)")
+
+
+def _context_args(p):
+    c = p.add_argument_group("location context (docs/LOCATION_AWARE_HANDOVER.md §12)")
+    c.add_argument("--use-position", action="store_true", help="distance ratio + radial speed tokens")
+    c.add_argument("--use-radio-map", action="store_true", help="radio-map forecast tokens (needs a service)")
+    c.add_argument("--use-trajectory", action="store_true", help="next-cell probability tokens (needs a service)")
+    c.add_argument("--location-service", help="directory from build-location-service")
 
 
 def _sim(a):

@@ -171,6 +171,21 @@ def report_to_observation(report: dict, obs_cfg: ObsConfig) -> Observation:
         raise ValueError("report must contain at least one neighbour")
     while len(nbrs) < k:          # pad with a very weak copy of the last one
         nbrs.append({"cell_id": nbrs[-1]["cell_id"], "rsrp": [-140.0] * h})
+    context = None
+    if "context" in report or any("context" in n for n in nbrs):
+        # Location context from a Location xApp (docs/LOCATION_AWARE_HANDOVER.md §12):
+        # report["context"] = {"radial_speed": m/s to serving, "next_count": n}
+        # neighbors[i]["context"] = {"dist_ratio", "radial_speed", "map_gain_now",
+        #                            "map_gain_ahead", "next_prob"}; missing = unknown
+        context = empty_context(1, k)
+        rc = report.get("context", {})
+        context["radial_speed"][0, 0] = rc.get("radial_speed", np.nan)
+        context["next_count"][0] = rc.get("next_count", np.nan)
+        for j, n in enumerate(nbrs):
+            nc = n.get("context", {})
+            for key in ("dist_ratio", "map_gain_now", "map_gain_ahead", "next_prob"):
+                context[key][0, j] = nc.get(key, np.nan)
+            context["radial_speed"][0, j + 1] = nc.get("radial_speed", np.nan)
     return Observation(
         serving=np.array([int(report["serving_cell"])]),
         serving_hist=hist(report["serving_rsrp"])[None],
@@ -178,6 +193,7 @@ def report_to_observation(report: dict, obs_cfg: ObsConfig) -> Observation:
         nbr_hist=np.stack([hist(n["rsrp"]) for n in nbrs])[None],
         sinr_db=np.array([float(report.get("sinr_db", 0.0))]),
         speed_kmh=np.array([float(report.get("speed_kmh", 30.0))]),
+        context=context,
     )
 
 
@@ -188,10 +204,25 @@ def _first_per_cell(cells, probs) -> dict:
     return out
 
 
+CONTEXT_KEYS = ("dist_ratio", "radial_speed", "map_gain_now", "map_gain_ahead", "next_prob", "next_count")
+
+
+def empty_context(n_ue: int, k: int) -> dict:
+    """All-unknown (NaN) location context for `n_ue` UEs with `k` neighbours."""
+    shape = {"radial_speed": (n_ue, k + 1), "next_count": (n_ue,)}
+    return {key: np.full(shape.get(key, (n_ue, k)), np.nan) for key in CONTEXT_KEYS}
+
+
 def stack_observations(observations: list[Observation]) -> Observation:
     """Concatenate single- or multi-UE observations along the UE axis."""
-    return Observation(*(np.concatenate([getattr(o, f) for o in observations])
-                         for f in ("serving", "serving_hist", "nbr_ids", "nbr_hist", "sinr_db", "speed_kmh")))
+    out = Observation(*(np.concatenate([getattr(o, f) for o in observations])
+                        for f in ("serving", "serving_hist", "nbr_ids", "nbr_hist", "sinr_db", "speed_kmh")))
+    if any(o.context for o in observations):
+        ctxs = [o.context or empty_context(len(o.serving), o.nbr_ids.shape[1]) for o in observations]
+        out.context = {k: np.concatenate([np.asarray(c.get(k, empty_context(len(o.serving), o.nbr_ids.shape[1])[k]),
+                                                     dtype=float) for c, o in zip(ctxs, observations)])
+                       for k in CONTEXT_KEYS}
+    return out
 
 
 class LLMPolicy:

@@ -204,6 +204,10 @@ class Observation:
     nbr_hist: np.ndarray       # (U, K, H)
     sinr_db: np.ndarray        # (U,)
     speed_kmh: np.ndarray      # (U,)
+    # Optional location context (ai_ran_llm.location.compute_context); NaN = unknown. Keys:
+    # dist_ratio (U,K), radial_speed (U,K+1: serving first), map_gain_now / map_gain_ahead (U,K),
+    # next_prob (U,K), next_count (U,)
+    context: dict | None = None
 
 
 def history_steps(t: int, obs: ObsConfig) -> np.ndarray:

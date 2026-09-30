@@ -1,5 +1,6 @@
 """Train HandoverGPT on a tokenised handover corpus."""
 
+import json
 import math
 import time
 from dataclasses import asdict
@@ -7,7 +8,7 @@ from dataclasses import asdict
 import numpy as np
 import torch
 
-from .config import ModelConfig, SimConfig
+from .config import ModelConfig, ObsConfig, SimConfig
 from .model import HandoverGPT
 from .tokenizer import MAX_CELLS, HandoverTokenizer
 
@@ -58,7 +59,9 @@ def train(data_path: str, out_path: str, epochs: int = 3, batch_size: int = 256,
     data = np.load(data_path)
     tokens = torch.from_numpy(data["tokens"])
     prompt_len = int(data["prompt_len"])
-    tok = HandoverTokenizer()
+    # corpora with location context carry their ObsConfig; older corpora use the default
+    obs_cfg = ObsConfig(**json.loads(str(data["obs_cfg"]))) if "obs_cfg" in data.files else ObsConfig()
+    tok = HandoverTokenizer(obs_cfg)
     assert tok.prompt_len == prompt_len, "dataset built with a different ObsConfig"
 
     n_val = max(1, int(len(tokens) * val_frac))
