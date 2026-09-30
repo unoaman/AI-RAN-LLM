@@ -1,0 +1,62 @@
+{
+  "A3 (1dB, 200ms)": {
+    "ho_per_ue_min": 17.8625,
+    "ping_pong_pct": 31.088173547935618,
+    "return_5s_pct": 49.72008397480756,
+    "rlf_per_ue_min": 0.0,
+    "hof_per_ue_min": 0.6875,
+    "mean_sinr_db": 6.975235391216387,
+    "mean_se_bps_hz": 2.958684445334937,
+    "outage_pct": 2.2239583333333335
+  },
+  "A3 (2dB, 300ms)": {
+    "ho_per_ue_min": 10.356250000000001,
+    "ping_pong_pct": 13.216656608328304,
+    "return_5s_pct": 35.87809293904647,
+    "rlf_per_ue_min": 0.015625,
+    "hof_per_ue_min": 1.221875,
+    "mean_sinr_db": 6.591549036118171,
+    "mean_se_bps_hz": 2.9187733334681893,
+    "outage_pct": 3.7546875
+  },
+  "Shipped @0.35": {
+    "ho_per_ue_min": 13.3375,
+    "ping_pong_pct": 21.41518275538894,
+    "return_5s_pct": 43.18181818181818,
+    "rlf_per_ue_min": 0.00625,
+    "hof_per_ue_min": 0.525,
+    "mean_sinr_db": 7.039888705922619,
+    "mean_se_bps_hz": 2.9692962793184914,
+    "outage_pct": 1.9203125
+  },
+  "Shipped @0.35 +guard(2s,0.8,3dB)": {
+    "ho_per_ue_min": 12.881250000000001,
+    "ping_pong_pct": 18.655992236778264,
+    "return_5s_pct": 40.975254730713246,
+    "rlf_per_ue_min": 0.00625,
+    "hof_per_ue_min": 0.540625,
+    "mean_sinr_db": 7.012939549915427,
+    "mean_se_bps_hz": 2.9656702863799245,
+    "outage_pct": 1.9947916666666667
+  },
+  "Shipped @0.35 +guard(2s,0.9,5dB)": {
+    "ho_per_ue_min": 12.881250000000001,
+    "ping_pong_pct": 18.655992236778264,
+    "return_5s_pct": 40.975254730713246,
+    "rlf_per_ue_min": 0.00625,
+    "hof_per_ue_min": 0.540625,
+    "mean_sinr_db": 7.012939549915427,
+    "mean_se_bps_hz": 2.9656702863799245,
+    "outage_pct": 1.9947916666666667
+  },
+  "Shipped @0.35 +guard(5s,0.8,3dB)": {
+    "ho_per_ue_min": 12.637500000000001,
+    "ping_pong_pct": 18.47181008902077,
+    "return_5s_pct": 39.51533135509396,
+    "rlf_per_ue_min": 0.00625,
+    "hof_per_ue_min": 0.5593750000000001,
+    "mean_sinr_db": 6.998799992431931,
+    "mean_se_bps_hz": 2.9639403622210643,
+    "outage_pct": 2.035416666666667
+  }
+}
