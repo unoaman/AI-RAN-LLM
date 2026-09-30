@@ -1,11 +1,13 @@
 """Model-side hysteresis against ping-pong: ReturnGuard sweep (docs/DESIGN.md §21.17).
 
-    PYTHONPATH=. python experiments/ping_pong_guard.py [--part city|original|both] [--threads 4]
+    PYTHONPATH=. python experiments/ping_pong_guard.py [--part city|original|both|rescue] [--threads 4]
 
 No retraining: the guard sits in the decision layer (ai_ran_llm.inference.ReturnGuard).
 * city: the 3-epoch city models (checkpoints/city_*_e3.pt, threshold 0.5) and the shipped model
   (threshold 0.35) on the same unseen city drives as docs/LOCATION_AWARE_HANDOVER.md §13.1.
 * original: the shipped model on the original simulator (the README benchmark drives).
+* rescue: the rescue SINR level (below it the guard steps aside) for the shipped model on the
+  original simulator and the radio-map city model, guard (2 s, 0.9, 5 dB).
 Results: experiments/results/ping_pong_guard_<part>.json; "return5s %" guards against a policy
 that only postpones returns past the 1 s ping-pong window.
 """
@@ -51,7 +53,7 @@ def run(part, pols, sim):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--part", choices=["city", "original", "both"], default="both")
+    ap.add_argument("--part", choices=["city", "original", "both", "rescue"], default="both")
     ap.add_argument("--threads", type=int, default=0)
     a = ap.parse_args()
     if a.threads:
@@ -79,6 +81,21 @@ def main():
             for suffix, make in guarded(factory).items():
                 pols[f"City {name} @0.5" + suffix] = make
         run("city", pols, SimConfig(mobility="roads", shadowing="spatial"))
+    if a.part == "rescue":
+        levels = [-6.0, -8.0, -9.0, -10.0, float("-inf")]
+        g = lambda r: ReturnGuard(window_s=2.0, threshold=0.9, margin_db=5.0, rescue_sinr_db=r)
+        pols = dict(a3)
+        pols["Shipped @0.35"] = lambda: LLMPolicy(shipped, 0.35)
+        for r in levels:
+            pols[f"Shipped @0.35 +guard rescue {r:g} dB"] = lambda r=r: LLMPolicy(shipped, 0.35, g(r))
+        run("rescue_original", pols, SimConfig())
+        svc = LocationService.load("data/city/location_service")
+        llm = HandoverLLM.load("checkpoints/city_radio_map_e3.pt")
+        pols = dict(a3)
+        pols["City radio_map @0.5"] = lambda: LocationAwarePolicy(llm, svc, 0.5)
+        for r in levels:
+            pols[f"City radio_map @0.5 +guard rescue {r:g} dB"] = lambda r=r: LocationAwarePolicy(llm, svc, 0.5, guard=g(r))
+        run("rescue_city", pols, SimConfig(mobility="roads", shadowing="spatial"))
     log("done")
 
 
