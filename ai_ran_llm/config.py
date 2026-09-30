@@ -26,7 +26,7 @@ class SimConfig:
     hof_sinr_db: float = -10.0     # serving SINR below this at HO command -> HO failure
     ping_pong_steps: int = 10      # return to previous cell within 1 s = ping-pong
     ho_interruption_s: float = 0.05
-    # "City" model (docs/LOCATION_AWARE_HANDOVER.md §7). Defaults reproduce the original simulator
+    # "City" model (docs/LOCATION_AWARE_HANDOVER.md §8). Defaults reproduce the original simulator
     # bit-for-bit; the alternatives make location, radio maps and trajectories measurable.
     mobility: str = "random"       # "random": Gauss-Markov heading | "roads": routes on a road network
     shadowing: str = "per_ue"      # "per_ue": AR(1) along each path | "spatial": one field per cell,

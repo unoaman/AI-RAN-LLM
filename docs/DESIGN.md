@@ -438,6 +438,7 @@ Each entry: **decision**, **why**, **alternatives rejected and why not**.
 | Tx / noise | Per-RE RS power, per-RE noise incl. NF | 15 dBm, −125 dBm |
 | Interference | All other cells, scaled by load | load = 0.7 |
 | Mobility | Constant speed per UE, Gauss-Markov heading, soft boundary | 3–120 km/h, heading noise 0.05 rad/step |
+| City model (opt-in) | Road mobility with repeated routes and location-tied shadowing (§7.6) | `mobility="roads"`, `shadowing="spatial"`, `map_seed` 1 |
 | Time | Decision and measurement every step | 100 ms |
 | RLF | T310-like: N consecutive out-of-sync steps | Qout = −8 dB, 5 steps (500 ms) |
 | HOF | Large-scale SINR at HO command below threshold | −10 dB |
@@ -510,6 +511,16 @@ for loaded traces, `logged_serving, logged_sinr_db`. `save_episode` writes float
 "unmeasured", 64-cell limit, validation of `serving`) — see §16.5.
 
 ---
+
+### 7.6 Opt-in city model — `city.py`
+
+`SimConfig.mobility = "roads"` moves UEs along popular routes on a road network (street grid,
+highways, walkways; Zipf popularity; stops at intersections). `SimConfig.shadowing = "spatial"`
+replaces the per-path AR(1) shadowing with one Gudmundson-correlated field per cell, tied to
+places and shared by all UEs and drives. The city is drawn from `map_seed` with its own random
+generator. Both default off, and the original simulator is pinned by
+`tests/test_city.py::test_default_simulator_unchanged`. With the city model, location, radio maps
+and trajectory mining become measurable (`docs/LOCATION_AWARE_HANDOVER.md` §8–§9).
 
 ## 8. Measurement reports (observations)
 
@@ -1131,12 +1142,14 @@ AI-RAN-LLM/
 ├── .gitignore                    ignores data/* and checkpoints/* except shipped artifacts
 ├── docs/
 │   ├── DESIGN.md                 this document
+│   ├── LOCATION_AWARE_HANDOVER.md location, radio map, trajectory mining: concept + findings
 │   └── RAN_INTEGRATION.md        real-RAN integration guide (OCUDU / srsRAN, OAI)
 ├── ai_ran_llm/
 │   ├── __init__.py               exports configs, HandoverGPT, HandoverTokenizer; __version__
 │   ├── __main__.py               python -m ai_ran_llm → cli.main()
 │   ├── config.py                 SimConfig, ObsConfig, ModelConfig
 │   ├── simulator.py              network, channel, mobility, reports, closed loop, KPIs, drive I/O
+│   ├── city.py                   opt-in city model: road mobility, spatial shadowing
 │   ├── policies.py               A3, teacher, smoothed labels, OraclePolicy
 │   ├── dataset.py                labelled drives, corpus, raw export, SFT export
 │   ├── tokenizer.py              domain vocabulary, encode/decode/explain
@@ -1160,7 +1173,9 @@ AI-RAN-LLM/
 │       └── fake_gnb.py           simulator-backed gNB over the bridge
 ├── tests/
 │   ├── test_pipeline.py          14 model / data / inference tests
-│   └── test_ran.py               16 real-RAN integration tests
+│   ├── test_ran.py               16 real-RAN integration tests
+│   └── test_city.py              5 city-model tests (incl. default-simulator fingerprint)
+├── experiments/                  location / radio-map / trajectory learnability studies
 ├── integrations/
 │   ├── ocudu/                    cells.example.json, mobility.example.yml (OCUDU / srsRAN)
 │   ├── oai/                      cells.example.json, measurement.example.conf
@@ -1200,6 +1215,10 @@ AI-RAN-LLM/
 | `build_observation(ep, t, serving, obs)` | top-K neighbours + histories + SINR + speed |
 | `Metrics` | KPI accumulators; `merge()`, `summary()` |
 | `run_policy(ep, policy, obs_cfg, record)` | closed-loop replay (§10); returns metrics, serving trajectory, optionally `(t, obs)` list |
+
+**`city.py`:** `ROUTE_TYPES`, `Route`, `city_routes(sim)`, `road_mobility(n_ue, n_steps, rng, sim)`
+→ (pos, speed, route_id), `shadow_fields(sim)`, `spatial_shadowing(pos, sim)`. `Episode.route_id`
+is set in road mode.
 
 ### 17.3 `policies.py`
 
@@ -1622,7 +1641,30 @@ refactor: `decide_reports` is now shared by the benchmark path and the xApp.
 **Measured.** Guard rails trade ping-pong for outage (§19.4). The model tolerates realistic
 reporting well (200 ms, 8 neighbours, RRC-quantised).
 
-### 21.14 Lessons learned
+### 21.14 Location, trajectory mining and the city model
+
+**User:** *"what do you think if the measurement reports are accompanied with location info
+(triangulation, angle of arrival) … a helper xApp in the RIC?"*, then *"dont change the code lets
+finalize the concept"*, *"create another md file to capture this idea and findings"*, *"can this
+help … predictive analytics / trajectory mining"*, and *"yes and can you implement [the]
+simulator upgrades"*.
+
+1. **Location study** (no code changes). A learnability test in the original simulator: position
+   with 10–30 m error catches about 10–13 % more teacher handovers at equal precision, and 100 m
+   error gives about 4 %. Captured in `docs/LOCATION_AWARE_HANDOVER.md`.
+2. **Key argument.** Location derived only from the same RSRP reports adds almost nothing. Gains
+   need new measurements (AoA, TA/RTT, beams, GNSS) or memory across UEs (a radio map, route
+   statistics). The original simulator cannot show the latter: it has random movement and
+   per-path shadowing.
+3. **City model.** `city.py` adds road mobility with repeated routes and location-tied shadowing,
+   both opt-in. The default simulator is unchanged: the committed corpus regenerates bit-for-bit,
+   and a fingerprint test was added.
+4. **Measured** (`experiments/location_trajectory_learnability.py`, 3 seeds, maps learned only
+   from training drives). In the city: radio-map forecast +78 % recall (target accuracy 82 →
+   89 %), position +27 %, handover-sequence prior with no location +16 %, all combined +83 %. In
+   the original simulator, the radio map and trajectory prior add little, as predicted.
+
+### 21.15 Lessons learned
 
 1. Calibrate the simulator against a classical baseline *before* training anything.
 2. Per-sample accuracy is misleading for rare, partly unpredictable events; evaluate in
@@ -1638,6 +1680,8 @@ reporting well (200 ms, 8 neighbours, RRC-quantised).
    integration bugs (clocks, routing, padding) that unit tests miss.
 9. Handle *confident* errors separately from low-confidence ones. An ML controller in a live
    network needs an independent, simple safety net and a RAN-side backstop.
+10. A simulator can only reveal benefits it models. Check what the simulator *cannot* express
+    (here: place-tied shadowing, routes) before concluding an idea does not help.
 
 ---
 
@@ -1654,6 +1698,7 @@ reporting well (200 ms, 8 neighbours, RRC-quantised).
 | HTTP request format = `reports.jsonl` format | exported reports can be sent straight to the endpoint | change both + README |
 | ran-bridge protocol `ai-ran-llm/ran-bridge/1` | RAN-side agents are written against it | add fields compatibly (optional); bump the version string for breaking changes |
 | Guard timers use report timestamps | mixed clocks silently block or allow handovers | keep every timer on `MeasReport.timestamp_s` |
+| Default simulator fingerprint (`test_default_simulator_unchanged`) | corpus reproducibility and every published number | new simulator features must be opt-in and must not consume the default random stream |
 | Fake gNB with guards off ≡ offline benchmark | the integration regression test (`test_fake_gnb_end_to_end_equals_offline_policy`) | if you change decision logic, change it in `decide_reports` so both paths share it |
 
 ### 22.2 Common tasks
@@ -1685,10 +1730,10 @@ reporting well (200 ms, 8 neighbours, RRC-quantised).
 3. Iterative DAgger: roll out the model, relabel its states with the teacher, retrain.
 4. RL fine-tuning on closed-loop KPIs starting from the supervised model.
 5. Pass `ObsConfig` through `train`/CLI; KV cache for rationale generation.
-7. Location-aware handover: position / heading and radio-map forecasts from a helper Location
-   xApp. Concept, simulator evidence (position at 10–30 m error catches about 10–13 % more
-   teacher handovers at equal precision) and a validation plan are in
-   `docs/LOCATION_AWARE_HANDOVER.md`.
+7. Location-aware handover and trajectory mining (`docs/LOCATION_AWARE_HANDOVER.md`).
+   Evidence so far, in the simulated city (learnability, 3 seeds): a radio-map forecast +78 %
+   recall at equal precision, position and heading +27 %, a handover-sequence prior with no
+   location +16 %. Next: closed-loop training with location / map / trajectory tokens.
 6. Shadow-mode evaluation on a live OCUDU/OAI testbed; a native FlexRIC actuator and an
    E2SM-RC REPORT (message copy) measurement source.
 
@@ -1696,7 +1741,9 @@ reporting well (200 ms, 8 neighbours, RRC-quantised).
 
 ## 23. Testing
 
-`pytest -q` — 30 tests (≈ 10 s): 14 in `tests/test_pipeline.py`, 16 in `tests/test_ran.py`.
+`pytest -q` — 35 tests (≈ 10 s): 14 in `tests/test_pipeline.py`, 16 in `tests/test_ran.py`,
+5 in `tests/test_city.py` (default-simulator fingerprint, spatial field statistics, place-tied
+shadowing across drives, road mobility, unknown-model errors).
 
 `tests/test_pipeline.py`:
 

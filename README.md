@@ -21,7 +21,9 @@ a near-RT RIC xApp (or an AI-RAN inference service next to the gNB).
 >
 > **Concept: location-aware handover** (position from AoA / RTT plus a radio-map "Location xApp"):
 > [`docs/LOCATION_AWARE_HANDOVER.md`](docs/LOCATION_AWARE_HANDOVER.md). It includes simulator
-> evidence and a validation plan; the code does not use location yet.
+> evidence (a radio-map forecast raises recall by about 78 % in the simulated city), trajectory
+> mining, and a validation plan. The simulator's opt-in "city" model (`--mobility roads
+> --shadowing spatial`) makes these measurable; the handover model does not use location yet.
 
 ## Why an LLM for handover?
 
@@ -190,6 +192,8 @@ A few things to watch for with real data:
 | `ai_ran_llm/serve.py` | HTTP endpoint (`POST /v1/handover`) for a RIC/xApp integration. |
 | `ai_ran_llm/evaluate.py` | Closed-loop benchmark on identical drives: HandoverLLM vs A3 settings vs teacher. |
 | `ai_ran_llm/ran/` | Real-RAN integration: RRC MeasurementReport parsing (JSON/XER, TS 38.133), ran-bridge protocol, cell map, per-UE tracker, controller with guard rails, actuators (E2SM-RC, OAI telnet, srsRAN/OCUDU console, command), RRC log source, xApp runtime, fake gNB. See `docs/RAN_INTEGRATION.md`. |
+| `ai_ran_llm/city.py` | Opt-in "city" model for the simulator: road-network mobility with popular, repeated routes and stops, and location-tied (spatial) shadowing shared by all UEs and drives. `--mobility roads --shadowing spatial`. Defaults keep the original simulator bit-for-bit. |
+| `experiments/` | Location / radio-map / trajectory learnability studies (`docs/LOCATION_AWARE_HANDOVER.md`). |
 | `integrations/` | Example cell maps and RAN configs for OCUDU/srsRAN and OAI, the O-RAN SC RIC xApp, and a RAN-side bridge agent template. |
 
 ## Quick start

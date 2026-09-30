@@ -1,9 +1,13 @@
 # Location-aware handover: concept, findings and plan
 
-**Status: concept and evidence only; nothing in the code uses location yet.** This document
-records the idea of feeding UE location to HandoverLLM, from triangulation / angle of arrival
-and a helper "Location xApp" in the RIC. It also records a simulator experiment that estimates
-the benefit, and a plan to validate it properly.
+**Status: concept plus simulator evidence; the handover model does not use location yet.**
+This document records:
+* the idea of feeding UE location to HandoverLLM, from triangulation / angle of arrival and a
+  helper "Location xApp" in the RIC (§1–§6);
+* the idea of adding trajectory mining / predictive tracking (§7);
+* the simulator upgrades that make both measurable, now implemented as the opt-in "city" model
+  (§8);
+* the measured results (§3, §9) and what remains to validate (§10).
 
 Related: `docs/DESIGN.md` (model, training), `docs/RAN_INTEGRATION.md` (xApp, RIC interfaces).
 
@@ -84,7 +88,8 @@ This is a **learnability** test, the same method as the label-smoothing study (`
   about 16 %. At 100 m the gain shrinks to about 4 %.
 * **Recall is the model's main weakness today** (`DESIGN.md` §19.3: it hands over late), so
   better recall is the gain that matters most.
-* **This is a lower bound.** The simulator's shadowing is a random process along each UE's path.
+* **This is a lower bound (since measured, §9).** The original simulator's shadowing is a random
+  process along each UE's path.
   It is **not tied to places**, so two UEs at the same spot see unrelated shadowing. Location can
   therefore only help through geometry (distance and direction to the cells). In real deployments
   shadowing is tied to buildings and streets, so a radio map would add information that is absent
@@ -171,34 +176,203 @@ flowchart LR
 | Distribution shift | A model trained with good location may over-trust it | Train with dropout and noisy location; monitor location error in shadow mode |
 | Cost | A second xApp to run; a retrained model | Only worth it if §7 shows closed-loop gains |
 
-## 7. Validation plan (not started)
+## 7. Trajectory mining and predictive tracking
 
-1. **Simulator: tie shadowing to places.** Replace the per-UE shadowing process with a spatially
-   correlated field shared by all UEs (e.g. a Gudmundson-correlated grid per cell). Without this,
-   the radio-map benefit cannot be measured.
-2. **Build the Location xApp offline,** first in the simulator:
-   * position from noisy AoA and TA (σ as in §3);
+**Idea.** Machine-learning models analyse historical routes, dwell times and movement patterns to
+anticipate where a device is going. This smooths out tracking lag and filters out temporary
+tracking errors.
+
+**Why it fits this problem.** The model's main weakness is that it hands over late. The teacher is
+good because it knows the next second, and trajectory mining is a way to estimate that next second:
+
+| Capability | What it gives the handover decision |
+|---|---|
+| **Smoothing / filtering** (Kalman or particle filter, snapping positions to roads) | Cleaner position and heading. In §3, reducing positioning error from 100 m to 30 m recovered most of the available gain |
+| **Next-location / next-cell prediction** from historical routes | Hand over *before* the signal drops, which addresses the late-handover weakness |
+| **Dwell-time prediction** | Skip a cell the UE will leave within a second (a small cell at a corner, a fast car at a cell edge). This reduces ping-pong and "too-short stay" handovers |
+| **Combined with the radio map** | Predicted path + known signal along it = forecast of each cell's RSRP 1–2 s ahead: an online version of the teacher's look-ahead |
+
+**A cheap version needs no location at all: mining handover sequences.** Operators already log
+which cells UEs pass through, and in what order. A model of "after cell A then B, UEs usually go
+to C (80 %), rarely D" predicts the next cell without GNSS, AoA or triangulation. On highways,
+railways and main roads the next cell is often almost certain. Cell sequences are just tokens
+(`C12 C7 → C4`), so this fits the same model. It also raises fewer privacy issues. §9 measures
+it as the "trajectory prior".
+
+**Where it helps, and where not.**
+* Helps most: structured, repeated movement such as roads, railways, corridors, commutes and
+  high-speed UEs. That is also where handover failures and ping-pong cluster.
+* Helps little: random pedestrian movement, indoor environments, UEs seen for the first time,
+  and junctions, where the prediction splits between branches. Predictions must carry an
+  uncertainty, with fallback to today's behaviour.
+
+**Where it runs (O-RAN).** Mining months of route and handover history is slow, offline work for
+the **non-RT RIC / SMO**. The trained model is deployed to the near-RT RIC, and the
+Location / trajectory xApp publishes per UE:
+* the predicted next-cell distribution;
+* the expected dwell time per candidate cell;
+* a confidence value.
+
+HandoverLLM reads these as optional input tokens.
+
+**Caveats.**
+* **Privacy is a bigger issue than with location alone:** routes and dwell times reveal home,
+  work and habits. Mine *aggregated* road-segment and cell-transition statistics, never
+  per-subscriber histories.
+* **Confident wrong predictions** at junctions can cause bad early handovers. The existing
+  safety layers (confidence threshold, A3 override, guard rails, RAN backstop) must stay.
+* **Patterns go stale** with road works, events and new cells. The models need regular
+  retraining, and their prediction accuracy should be monitored in shadow mode.
+
+## 8. Simulator upgrades: the "city" model (implemented)
+
+The original simulator cannot measure radio-map or trajectory benefits:
+* UEs move randomly (Gauss-Markov), so there are no routes or habits to mine;
+* shadowing is drawn along each UE's path, so there is no place-dependent signal to map.
+
+Two opt-in upgrades fix this. They live in `ai_ran_llm/city.py` and are selected with
+`SimConfig.mobility` / `SimConfig.shadowing`, or on the CLI with
+`--mobility roads --shadowing spatial [--map-seed N]` (`gen-data`, `evaluate`, `export-raw`,
+`fake-gnb`).
+
+| Upgrade | Model | Parameters (defaults) |
+|---|---|---|
+| **Road mobility** (`mobility="roads"`) | A street grid plus highways inside the service area. `n_routes` fixed routes with Zipf popularity (the top 5 carry about half the UEs), so paths repeat like commutes. Route types: street (20–50 km/h), highway (70–120 km/h), walk (3–6 km/h), with shares 60 / 20 / 20 %. Street UEs stop at intersections (probability `stop_prob`, 2–20 s); walkers stop half as often. UEs turn back at route ends | `road_spacing_m` 150, `n_routes` 40, `stop_prob` 0.3 |
+| **Spatial shadowing** (`shadowing="spatial"`) | One Gaussian random field per cell with σ = `shadow_sigma_db` and exponential spatial correlation over `shadow_decorr_m` (Gudmundson). Generated by circulant embedding on a 10 m grid (2.56 km square) and bilinearly interpolated at UE positions. The field depends only on the place, so every UE at the same spot sees the same shadowing, in every drive | σ 6 dB, 50 m |
+| **The city** | Roads, routes, popularity and fields come from `map_seed` with their own random generator, independent of each episode's random stream. Every drive happens in the same city, like a real network | `map_seed` 1 |
+
+**Checks:**
+* **Defaults are untouched:** the committed corpus regenerates bit-for-bit, and
+  `tests/test_city.py::test_default_simulator_unchanged` pins a fingerprint of the original
+  simulator.
+* **Field statistics:** measured standard deviation 5.99 dB (target 6); correlation 0.81 / 0.35 /
+  0.12 at 10 / 50 / 100 m vs the exponential model's 0.82 / 0.37 / 0.14.
+* **Mobility:** street UEs stay exactly on grid lines; about 11 % of UE-steps are stopped.
+
+Baseline KPIs stay plausible in every combination (2 drives × 64 UEs):
+
+| World | A3 2 dB: HO/UE/min, ping-pong, SE, outage | Teacher: HO/UE/min, ping-pong, SE, outage |
+|---|---|---|
+| Original | 9.8, 13 %, 2.97, 3.7 % | 7.7, 5 %, 3.05, 0.5 % |
+| Roads only | 8.5, 12 %, 2.93, 3.0 % | 6.4, 5 %, 3.00, 0.5 % |
+| Spatial shadowing only | 8.2, 10 %, 3.29, 1.8 % | 6.4, 4 %, 3.34, 0.2 % |
+| City (both) | 7.6, 8 %, 2.80, 1.6 % | 6.1, 5 %, 2.84, 0.3 % |
+
+**Simplifications:**
+* Fields of different cells are independent (real obstacles affect several cells at once).
+* Buildings do not block movement beyond the street grid.
+* There are no traffic dynamics.
+* Speeds do not vary within a route type.
+
+## 9. Measured: location, radio map and trajectory mining in the city
+
+**Method** (`experiments/location_trajectory_learnability.py`). For each world:
+* **Drives:** 16 drives × 32 UEs × 60 s with the corpus's behaviour-policy mix.
+* **Labels:** teacher labels; the target is "hand over to *this* neighbour now", for each of the
+  4 reported neighbours. This captures both timing and target choice.
+* **Split:** radio maps and handover-sequence statistics are learned from the **12 training
+  drives only**, and scores come from the **4 held-out drives**.
+* **Position:** estimated positions have 10 m, time-correlated error (as in §3).
+* **Repeats:** 3 seeds (5, 6, 7), each with fresh drives in the same city.
+
+Feature sets:
+* **position & heading:** as in §3;
+* **radio-map forecast:** RSRP map on a 20 m grid from the training drives' reports (serving + 8
+  strongest cells). For each neighbour, map(neighbour) − map(serving) at the current position and
+  at the position predicted 1 s ahead;
+* **trajectory prior:** P(next serving cell = neighbour | previous cell, current cell), mined
+  from the training drives' handover sequences, backing off to P(next | current). **It uses no
+  location.**
+
+**Results** (mean over 3 seeds; the range of the recall change across seeds in brackets):
+
+*Original simulator (random movement, per-path shadowing):*
+
+| Features | AUC per neighbour | AUC any handover | Recall @ 50 % precision | Change | Target-cell accuracy |
+|---|---:|---:|---:|---:|---:|
+| Report only (today) | 0.954 | 0.892 | 0.210 | — | 0.807 |
+| + position & heading (σ = 10 m) | 0.962 | 0.908 | 0.292 | +53 % (+23…+111) | 0.832 |
+| + radio-map forecast | 0.960 | 0.903 | 0.263 | +36 % (+2…+86) | 0.832 |
+| + trajectory prior (no location) | 0.954 | 0.893 | 0.215 | +4 % (+0…+7) | 0.811 |
+| All combined | 0.961 | 0.906 | 0.289 | +51 % (+23…+105) | 0.834 |
+
+*City (road mobility + spatial shadowing):*
+
+| Features | AUC per neighbour | AUC any handover | Recall @ 50 % precision | Change | Target-cell accuracy |
+|---|---:|---:|---:|---:|---:|
+| Report only (today) | 0.971 | 0.932 | 0.357 | — | 0.824 |
+| + position & heading (σ = 10 m) | 0.975 | 0.941 | 0.451 | +27 % (+21…+34) | 0.848 |
+| **+ radio-map forecast** | **0.983** | **0.957** | **0.618** | **+78 % (+63…+108)** | **0.894** |
+| + trajectory prior (no location) | 0.973 | 0.936 | 0.409 | +16 % (+7…+22) | 0.854 |
+| All combined | 0.983 | 0.958 | 0.635 | +83 % (+66…+111) | 0.902 |
+
+**Interpretation:**
+* **The reasoning in §2 holds.**
+  * In the original simulator there is nothing place- or route-dependent to learn. The
+    trajectory prior adds nothing, and the radio map helps only by encoding geometry, much like
+    position does.
+  * In the city, the **radio-map forecast is the strongest single input**: +78 % recall at the
+    same precision, and target-cell accuracy up from 82 % to 89 %.
+* **Trajectory mining pays off without any location.** Handover-sequence statistics alone add
+  +16 % recall and raise target accuracy from 82 % to 85 %. This is the cheapest option: operators
+  already have the data, and no new RAN measurements are needed.
+* **Combining everything** gives +83 %. Most of that comes from the radio map, since the map
+  forecast already contains much of the route information.
+* **Absolute recall values vary by seed.** The 4 held-out drives differ in which behaviour
+  policies drove them. The ranking of feature sets is the same in every seed, and the AUC and
+  target-accuracy columns are stable.
+* **These numbers are not comparable to §3.** That study used a different split (by sample
+  order), a single binary output and different labels. Compare rows within one table only.
+* **Still learnability, not closed-loop KPIs.** Proving handover-rate, ping-pong, RLF and
+  throughput gains requires training HandoverLLM with the new tokens (§10).
+
+## 10. Validation plan: status
+
+1. **Done — simulator: tie shadowing to places** (§8). A spatially correlated field per cell,
+   shared by all UEs and drives, plus road mobility with repeated routes.
+2. **Partly done — build the Location xApp's pieces offline in the simulator.** The learnability
+   study (§9) already uses:
+   * noisy positions (10 m, time-correlated), standing in for AoA / TA fusion;
    * a radio map learned from training drives;
-   * a 1–2 s RSRP forecast.
-3. **Train three models** and compare them in closed loop on the same benchmark drives (`evaluate`):
-   (a) report-only (today); (b) report + position and heading; (c) report + radio-map forecast.
-   Also test with realistic reporting (the fake gNB's `--realistic`).
-4. **Decide.** Proceed only if (b) or (c) improves recall and outage without raising RLF or
+   * a 1 s RSRP forecast along the heading;
+   * handover-sequence mining.
+
+   Still open: deriving position from simulated AoA / TA measurements instead of adding noise to
+   the true position.
+3. **Next — train four models** and compare them in closed loop on the same city benchmark drives
+   (`evaluate --mobility roads --shadowing spatial`):
+   (a) report-only (today); (b) + position and heading; (c) + radio-map forecast;
+   (d) + trajectory prior. Also test with realistic reporting (the fake gNB's `--realistic`).
+4. **Decide.** Proceed only if (b), (c) or (d) improves recall and outage without raising RLF or
    ping-pong.
 5. **Testbed, shadow mode.** Run the Location xApp alongside the RAN, and measure position error
    (against GNSS or a survey) and forecast error. Then run the handover xApp with location
    tokens in shadow mode and compare its decisions with today's model.
 
-## 8. Recommendation
+## 11. Recommendation
 
-Worth pursuing, **mainly for the radio map and forecast**. Raw position alone gives a moderate
-gain at 10–30 m accuracy and little at 100 m. The cheapest informative next step is §7 steps 1–3
-in simulation. It needs no RAN hardware and shows whether the radio-map effect is large enough
-to justify a Location xApp.
+Worth pursuing. The city measurements (§9) rank the options:
+
+1. **Radio-map forecast**, which needs position: the largest gain (+78 % recall, target accuracy
+   82 → 89 %).
+2. **Position and heading alone:** a moderate gain (+27 %), which depends strongly on accuracy
+   (§3).
+3. **Trajectory prior from handover sequences:** a smaller gain (+16 %) but **no location
+   needed**. It is the cheapest step for a real network.
+
+**Next step:** train HandoverLLM with optional location / map / trajectory tokens on city
+corpora, and measure closed-loop KPIs with `evaluate --mobility roads --shadowing spatial`
+against today's model (§10, step 3).
 
 ---
 
-## Appendix: experiment script
+## Appendix: experiment scripts
+
+* `experiments/location_learnability.py`: the §3 position study (the script below).
+* `experiments/location_trajectory_learnability.py`: the §9 study (location, radio map and
+  trajectory prior, original simulator vs city). Run with seeds 5, 6 and 7.
+
+§3 script:
 
 Run from the repository root with `PYTHONPATH=.`. It takes about 10–20 minutes on 4 CPU cores,
 and uses only existing package functions.
