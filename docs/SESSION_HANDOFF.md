@@ -94,7 +94,7 @@ ai_ran_llm/
 integrations/      OCUDU/srsRAN + OAI example configs, O-RAN SC RIC xApp, bridge-agent template
 experiments/       location learnability studies, closed-loop location study, logs/
 tests/             test_pipeline (14), test_ran (16), test_city (5), test_location (7) = 42
-checkpoints/       handover_llm.pt (shipped), city_base / city_position / city_radio_map.pt
+checkpoints/       handover_llm.pt (shipped), city_base / city_position / city_radio_map / city_trajectory.pt
 data/              handover_corpus.npz (527 512 samples), raw/ (drive 0), city/location_service/
 docs/              DESIGN, RAN_INTEGRATION, LOCATION_AWARE_HANDOVER, SESSION_HANDOFF
 ```
@@ -113,16 +113,16 @@ them in the city (seed 10000, 5 × 64 UEs × 60 s) against A3, the shipped model
 | base (report only) | 41 | 0.914 | 0.341 | `checkpoints/city_base.pt` (committed) |
 | + position | 50 | 0.919 | 0.406 | `checkpoints/city_position.pt` (committed) |
 | + radio map | 49 | 0.927 | 0.488 | `checkpoints/city_radio_map.pt` (committed) |
-| + trajectory | 46 | in training at handoff | | not yet |
+| + trajectory | 46 | 0.918 | 0.392 | `checkpoints/city_trajectory.pt` (committed) |
 | all | 63 | pending | | not yet |
 
-* **Committed so far:** the three finished checkpoints, the location service
+* **Committed so far:** the four finished checkpoints, the location service
   (`data/city/location_service/`) and the partial log
   (`experiments/logs/location_closed_loop.partial.log`).
 * **Not committed:** the corpora (17–21 MB each), which are fully reproducible from the seeds.
 
 **To finish on any machine** (the script skips the service and models that already exist, so
-only the missing corpora, the trajectory and all models, and the benchmark run):
+only the missing corpora, the "all" model and the benchmark run):
 
 ```bash
 PYTHONPATH=. python experiments/location_closed_loop.py      # → data/city/closed_loop.json

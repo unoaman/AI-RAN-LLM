@@ -32,3 +32,8 @@ saved checkpoints/city_radio_map.pt (epoch 1)
 02:29:13 training trajectory
 model: 0.86M params | train 350193 | val 18431 | device cpu
 epoch 1 step 400/1368 loss 0.9110 lr 8.96e-04 (199s)
+epoch 1 step 800/1368 loss 0.8335 lr 4.67e-04 (404s)
+epoch 1 step 1200/1368 loss 0.7925 lr 9.29e-05 (601s)
+epoch 1 val: answer_loss 0.3259, decision_acc 0.9182, ho_recall 0.3921
+saved checkpoints/city_trajectory.pt (epoch 1)
+02:40:47 corpus all
