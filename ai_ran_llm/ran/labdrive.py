@@ -277,7 +277,6 @@ class LabDrive:
     def _synth_loop(self) -> None:
         period = self.cfg.report_period_s
         last = self.now_s()
-        last_ploss = -1e9
         while not self.stop_ev.is_set():
             time.sleep(period / self.cfg.time_scale)
             now = self.now_s()
@@ -303,8 +302,14 @@ class LabDrive:
                 ue.seq += 1
                 self.stats["reports_synthetic"] += 1
                 self._to_xapp(rep.to_dict())
-            if self.cfg.ue_telnet and self.cfg.channels and now - last_ploss >= self.cfg.ploss_period_s and ues:
-                last_ploss = now
+
+    def _ploss_loop(self) -> None:
+        """RF-simulator coupling in its own thread: a slow or absent UE telnet never delays reports."""
+        while not self.stop_ev.is_set():
+            time.sleep(self.cfg.ploss_period_s / self.cfg.time_scale)
+            with self.lock:
+                ues = list(self.ues.values())
+            if ues:
                 self._set_ploss(ues[0])
 
     def ploss_for(self, rsrp_dbm: float) -> float:
@@ -348,7 +353,10 @@ class LabDrive:
         lh, _, lp = self.cfg.listen.rpartition(":")
         self.srv = socket.create_server((lh or "0.0.0.0", int(lp)))
         self.listen_port = self.srv.getsockname()[1]
-        for target, args in ((self._accept, (self.srv,)), (self._serve_xapp, ()), (self._synth_loop, ())):
+        loops = [(self._accept, (self.srv,)), (self._serve_xapp, ()), (self._synth_loop, ())]
+        if self.cfg.ue_telnet and self.cfg.channels:
+            loops.append((self._ploss_loop, ()))
+        for target, args in loops:
             threading.Thread(target=target, args=args, daemon=True).start()
         log.info("lab drive: ran-xapp %s, bridge listen %s:%s, synthetic=%s, rfsim coupling=%s",
                  self.cfg.xapp, lh or "0.0.0.0", self.listen_port, self.cfg.synthetic, bool(self.cfg.ue_telnet))

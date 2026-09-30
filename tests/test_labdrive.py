@@ -75,3 +75,25 @@ def test_lab_drive_closed_loop(tmp_path):
 def test_ploss_mapping():
     d = LabDrive(CellMap.from_dict(CELLS), LabDriveConfig(ploss_at_ref_db=20, rsrp_ref_dbm=-80, ploss_max_db=60))
     assert d.ploss_for(-80) == 20 and d.ploss_for(-100) == 40 and d.ploss_for(-200) == 60 and d.ploss_for(0) == 0
+
+
+def test_unreachable_ue_telnet_does_not_slow_reports(tmp_path):
+    """RF-simulator coupling runs in its own thread: a dead UE telnet must not delay reports."""
+    got = []
+    srv = socket.create_server(("127.0.0.1", 0))               # stands in for ran-xapp
+
+    def xapp():
+        conn, _ = srv.accept()
+        for line in conn.makefile("rb"):
+            if json.loads(line).get("type") == "meas_report":
+                got.append(1)
+
+    threading.Thread(target=xapp, daemon=True).start()
+    cfg = LabDriveConfig(xapp=f"127.0.0.1:{srv.getsockname()[1]}", listen="127.0.0.1:0", report_period_s=0.1,
+                         ue_telnet="10.255.255.1:8091", channels={0: 0, 1: 1}, ploss_period_s=0.1)
+    drive = LabDrive(CellMap.from_dict(CELLS), cfg).start()
+    b = socket.create_connection(("127.0.0.1", drive.listen_port))
+    b.sendall((json.dumps({"type": "ue_context", "ue_id": "u", "serving": {"nci": "0x12345678"}}) + "\n").encode())
+    time.sleep(3.0)
+    drive.stop()
+    assert len(got) >= 20                                       # ~30 at 10 Hz; a blocking telnet would give ~3

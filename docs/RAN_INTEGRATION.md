@@ -734,14 +734,18 @@ cd integrations/flexric/testbed
 | UE seen on the new cell over E2 | lab drive `handovers_executed` ≥ 1 |
 | UE still attached | `oaitun_ue1` has an IP |
 
-**Status.** Written and statically checked on a machine without kernel SCTP:
+**Status.** Written and checked on a machine without kernel SCTP:
 
-* `docker compose config` passes;
-* the images build;
-* `llm_bridge_test` passes inside the image;
-* the lab drive passes its tests against the real `ran-xapp`.
+* `docker compose config` passes.
+* Both images build, and `llm_bridge_test` passes inside the FlexRIC build.
+* The `ran-xapp` and `lab-drive` services run on the testbed network with a stand-in for
+  `llm_bridge`. In a 40 s drive, the lab drive sent 132 synthetic reports. The model issued 3
+  `ho_command`s, each for NR cell 11111111 or 12345678 in PLMN 20899 with the UE's E2 identity,
+  and each was executed. Three handovers within about 30 m of the cell edge is the shipped
+  model's ping-pong tendency; the `ReturnGuard` of DESIGN §21.17 is not yet in the RAN
+  controller.
 
-It has **not yet been run end to end**. The start order and the channel mapping follow OAI's CI.
+It has **not yet been run end to end with OAI and FlexRIC**. The start order and the channel mapping follow OAI's CI.
 Expect to adjust timings on a slow host.
 
 ## 10. Testing without a RAN
