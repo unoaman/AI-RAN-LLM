@@ -121,6 +121,26 @@ def main(argv=None):
     rx.add_argument("--duration", type=float, help="stop after this many seconds")
     rx.add_argument("-v", "--verbose", action="store_true")
 
+    ld = sub.add_parser("ran-lab-drive", help="OAI+FlexRIC testbed: synthetic radio between llm_bridge and ran-xapp")
+    ld.add_argument("--cells", required=True, help="cell map JSON; cells in map order lie on the drive line")
+    ld.add_argument("--xapp", default="127.0.0.1:7000", help="ran-xapp bridge HOST:PORT")
+    ld.add_argument("--listen", default="0.0.0.0:7001", help="where llm_bridge connects")
+    ld.add_argument("--synthetic", default="auto", choices=["auto", "on", "off"],
+                    help="synthetic measurement reports: auto = only for UEs without real reports")
+    ld.add_argument("--isd", type=float, default=500.0, help="site spacing along the drive (m)")
+    ld.add_argument("--speed-kmh", type=float, default=30.0)
+    ld.add_argument("--report-period-s", type=float, default=0.2)
+    ld.add_argument("--ue-telnet", help="nrUE telnet HOST:PORT (ciUE) to couple the RF simulator path loss")
+    ld.add_argument("--channel", action="append", default=[], metavar="CELL=N",
+                    help="cell index -> rfsim channel model index (repeat), e.g. 0=0 1=1")
+    ld.add_argument("--ploss-at-ref-db", type=float, default=20.0)
+    ld.add_argument("--rsrp-ref-dbm", type=float, default=-80.0)
+    ld.add_argument("--ploss-max-db", type=float, default=60.0)
+    ld.add_argument("--duration-s", type=float, help="stop after this long and print a JSON summary")
+    ld.add_argument("--summary", help="also write the summary JSON here")
+    ld.add_argument("--time-scale", type=float, default=1.0, help="virtual drive speed-up (tests only)")
+    ld.add_argument("--seed", type=int, default=0)
+
     fg = sub.add_parser("fake-gnb", help="simulated gNB that talks to a running ran-xapp over the bridge")
     _city_args(fg)
     fg.add_argument("--xapp", default="127.0.0.1:7000", help="ran-xapp bridge HOST:PORT")
@@ -213,6 +233,31 @@ def main(argv=None):
 
     elif a.cmd == "ran-xapp":
         _ran_xapp(a)
+
+    elif a.cmd == "ran-lab-drive":
+        import logging
+        import time
+        from .ran.cells import CellMap
+        from .ran.labdrive import LabDrive, LabDriveConfig
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+        cfg = LabDriveConfig(xapp=a.xapp, listen=a.listen, synthetic=a.synthetic, isd_m=a.isd,
+                             speed_kmh=a.speed_kmh, report_period_s=a.report_period_s, ue_telnet=a.ue_telnet,
+                             channels={int(k): int(v) for k, _, v in (c.partition("=") for c in a.channel)},
+                             ploss_at_ref_db=a.ploss_at_ref_db, rsrp_ref_dbm=a.rsrp_ref_dbm,
+                             ploss_max_db=a.ploss_max_db, time_scale=a.time_scale, seed=a.seed)
+        drive = LabDrive(CellMap.load(a.cells), cfg).start()
+        t_end = None if a.duration_s is None else time.monotonic() + a.duration_s
+        try:
+            while not drive.stop_ev.is_set() and (t_end is None or time.monotonic() < t_end):
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            pass
+        summary = drive.summary()
+        drive.stop()
+        print(json.dumps(summary, indent=2))
+        if a.summary:
+            with open(a.summary, "w") as f:
+                json.dump(summary, f, indent=2)
 
     elif a.cmd == "fake-gnb":
         from .ran.fake_gnb import FakeGnb

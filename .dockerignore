@@ -1,0 +1,9 @@
+# keeps the Docker build context small (integrations/flexric/testbed/Dockerfile.ai_ran_llm)
+.git
+data
+experiments
+docs
+tests
+**/__pycache__
+*.egg-info
+checkpoints/city_*.pt

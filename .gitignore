@@ -11,3 +11,5 @@ __pycache__/
 *.pyc
 *.egg-info/
 .pytest_cache/
+integrations/flexric/testbed/oai-conf/
+integrations/flexric/testbed/out/

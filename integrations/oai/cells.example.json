@@ -1,8 +1,24 @@
 {
-  "_comment": "OpenAirInterface: two DUs under one CU (F1 handover), as in doc/handover-tutorial.md. 'gnb' decides F1 (same gnb) vs N2 (different gnb) for the telnet actuator in auto mode. Replace PCIs / NR cell ids with the values of your DU configs.",
+  "_comment": "OpenAirInterface: two DUs under one CU (F1 handover), as in doc/handover-tutorial.md. 'gnb' decides F1 (same gnb) vs N2 (different gnb) for the telnet actuator in auto mode. Replace PCIs / NR cell ids with the values of your DU configs. OAI configs give nr_cellid in decimal (nr_cellid = 12345678L), so 'nci' is a decimal number here.",
   "plmn": "00101",
   "cells": [
-    {"index": 0, "pci": 0, "nci": "0x12345678", "gnb": "oai-cu", "neighbours": [1]},
-    {"index": 1, "pci": 1, "nci": "0x11111111", "gnb": "oai-cu", "neighbours": [0]}
+    {
+      "index": 0,
+      "pci": 0,
+      "nci": 12345678,
+      "gnb": "oai-cu",
+      "neighbours": [
+        1
+      ]
+    },
+    {
+      "index": 1,
+      "pci": 1,
+      "nci": 11111111,
+      "gnb": "oai-cu",
+      "neighbours": [
+        0
+      ]
+    }
   ]
 }

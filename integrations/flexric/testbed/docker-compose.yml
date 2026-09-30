@@ -1,0 +1,306 @@
+# HandoverLLM on OAI + FlexRIC: end-to-end testbed (docs/RAN_INTEGRATION.md §9.7).
+#
+# OAI part = OAI's F1 RF-simulator CI deployment (ci-scripts/yaml_files/5g_f1_rfsimulator at
+# the commit in fetch_oai_conf.sh): mini 5G core, one CU, two DUs (PCI 0 / PCI 1), one nrUE.
+# Added: E2 agent in the CU, FlexRIC nearRT-RIC, the llm_bridge xApp, ran-xapp (the model) and
+# ran-lab-drive (synthetic radio, since OAI's nrUE sends no MeasurementReports).
+#
+# Needs a Linux host with SCTP (modprobe sctp) and Docker Compose v2. Use ./run.sh; it fetches the
+# OAI configs, builds the two local images and starts the services in the order OAI requires.
+
+x-oai-image: &oai_env
+  ASAN_OPTIONS: detect_leaks=0:detect_odr_violation=0
+
+services:
+  # ------------------------------------------------------------------ 5G core (OAI CI mini core)
+  mysql:
+    container_name: llmlab-mysql
+    image: mysql:9.6
+    init: true
+    volumes:
+      - ./oai-conf/oai_db.sql:/docker-entrypoint-initdb.d/oai_db.sql
+      - ./oai-conf/mysql-healthcheck.sh:/tmp/mysql-healthcheck.sh
+    environment:
+      - TZ=Europe/Paris
+      - MYSQL_DATABASE=oai_db
+      - MYSQL_USER=test
+      - MYSQL_PASSWORD=test
+      - MYSQL_ROOT_PASSWORD=linux
+    healthcheck:
+      test: /bin/bash -c "/tmp/mysql-healthcheck.sh"
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.131
+  oai-amf:
+    container_name: llmlab-oai-amf
+    image: oaisoftwarealliance/oai-amf:v2.2.1
+    environment:
+      - TZ=Europe/paris
+    volumes:
+      - ./oai-conf/mini_nonrf_config_3slices.yaml:/openair-amf/etc/config.yaml
+    depends_on:
+      - mysql
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.132
+  oai-smf:
+    container_name: llmlab-oai-smf
+    image: oaisoftwarealliance/oai-smf:v2.2.1
+    environment:
+      - TZ=Europe/Paris
+    volumes:
+      - ./oai-conf/mini_nonrf_config_3slices.yaml:/openair-smf/etc/config.yaml
+    depends_on:
+      - oai-amf
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.133
+  oai-upf:
+    container_name: llmlab-oai-upf
+    image: oaisoftwarealliance/oai-upf:v2.2.1
+    init: true
+    environment:
+      - TZ=Europe/Paris
+    volumes:
+      - ./oai-conf/mini_nonrf_config_3slices.yaml:/openair-upf/etc/config.yaml
+    depends_on:
+      - oai-smf
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    cap_drop:
+      - ALL
+    privileged: true
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.134
+        interface_name: eth0
+      traffic_net:
+        ipv4_address: 192.168.72.134
+        interface_name: eth1
+  oai-ext-dn:
+    privileged: true
+    container_name: llmlab-oai-ext-dn
+    image: oaisoftwarealliance/trf-gen-cn5g:latest
+    init: true
+    entrypoint: /bin/bash -c "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE; ip route add 12.1.1.0/24 via 192.168.72.134 dev eth0; sleep infinity"
+    depends_on:
+      - oai-upf
+    networks:
+      traffic_net:
+        ipv4_address: 192.168.72.135
+
+  # ------------------------------------------------------------------ near-RT RIC
+  nearRT-RIC:
+    container_name: llmlab-nearRT-RIC
+    image: llm-lab/flexric:d7a7128
+    build:
+      context: ..
+      dockerfile: testbed/Dockerfile.flexric
+    command: ["stdbuf", "-o0", "nearRT-RIC"]
+    volumes:
+      - ./flexric.conf:/usr/local/etc/flexric/flexric.conf
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.160
+    healthcheck:
+      test: /bin/bash -c "pgrep nearRT-RIC"
+      interval: 10s
+      timeout: 5s
+
+  # ------------------------------------------------------------------ RAN (OAI F1 split, RF simulator)
+  oai-cu:
+    image: ${REGISTRY:-oaisoftwarealliance/}oai-gnb:${OAI_TAG:-2026.w39}
+    container_name: llmlab-oai-cu
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_NICE
+    environment:
+      <<: *oai_env
+      USE_ADDITIONAL_OPTIONS: --log_config.global_log_options level,nocolor,time
+                              --gNBs.[0].remote_s_address 0.0.0.0
+                              --telnetsrv --telnetsrv.listenaddr 192.168.71.150
+                              --telnetsrv.shrmod ci
+    depends_on:
+      - oai-ext-dn
+      - nearRT-RIC
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.150
+    volumes:
+      - ./oai-conf/neighbour-config.conf:/opt/oai-gnb/etc/neighbour-config.conf
+      - ./oai-conf/gnb-cu.sa.band78.106prb.conf:/opt/oai-gnb/etc/gnb.conf
+    healthcheck:
+      test: /bin/bash -c "pgrep nr-softmodem"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  oai-nr-ue:
+    image: ${REGISTRY:-oaisoftwarealliance/}oai-nr-ue:${OAI_TAG:-2026.w39}
+    container_name: llmlab-oai-nr-ue
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_NICE
+    environment:
+      <<: *oai_env
+      # The UE is the RF-simulator server; each DU connects as a client and gets its own
+      # channel model: rfsimu_channel_ue0 = first DU to connect (PCI 0), ue1 = second (PCI 1).
+      USE_ADDITIONAL_OPTIONS: --rfsim --log_config.global_log_options level,nocolor,time
+                              -r 106 --numerology 1 -C 3619200000
+                              --uicc0.imsi 208990100001100
+                              --rfsimulator.[0].options chanmod
+                              --rfsimulator.[0].serveraddr server
+                              --telnetsrv --telnetsrv.shrmod ciUE --telnetsrv.listenaddr 192.168.71.181 --telnetsrv.listenport 8091
+                              --channelmod.modellist_rfsimu_1.[0].model_name rfsimu_channel_ue0
+                              --channelmod.modellist_rfsimu_1.[1].model_name rfsimu_channel_ue1
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.181
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./oai-conf/nrue.uicc.conf:/opt/oai-nr-ue/etc/nr-ue.conf
+    healthcheck:
+      test: /bin/bash -c "pgrep nr-uesoftmodem"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  oai-du-pci0:
+    image: ${REGISTRY:-oaisoftwarealliance/}oai-gnb:${OAI_TAG:-2026.w39}
+    container_name: llmlab-oai-du-pci0
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_NICE
+    environment:
+      <<: *oai_env
+      USE_ADDITIONAL_OPTIONS: --rfsim
+                              --log_config.global_log_options level,nocolor,time
+                              --rfsimulator.[0].options chanmod
+                              --telnetsrv --telnetsrv.listenaddr 192.168.71.171
+                              --telnetsrv.shrmod ci
+                              --rfsimulator.[0].serveraddr 192.168.71.181
+    depends_on:
+      - oai-cu
+      - oai-nr-ue
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.171
+    volumes:
+      - ./oai-conf/gnb-du.sa.band78.106prb.rfsim.conf:/opt/oai-gnb/etc/gnb.conf
+    healthcheck:
+      test: /bin/bash -c "pgrep nr-softmodem"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  oai-du-pci1:
+    image: ${REGISTRY:-oaisoftwarealliance/}oai-gnb:${OAI_TAG:-2026.w39}
+    container_name: llmlab-oai-du-pci1
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_NICE
+    environment:
+      <<: *oai_env
+      USE_ADDITIONAL_OPTIONS: --rfsim
+                              --log_config.global_log_options level,nocolor,time
+                              --gNBs.[0].gNB_DU_ID 3585
+                              --gNBs.[0].nr_cellid 11111111
+                              --gNBs.[0].servingCellConfigCommon.[0].physCellId 1
+                              --gNBs.[0].servingCellConfigCommon.[0].absoluteFrequencySSB 643296
+                              --gNBs.[0].servingCellConfigCommon.[0].dl_absoluteFrequencyPointA 642024
+                              --gNBs.[0].servingCellConfigCommon.[0].ssb_PositionsInBurst_Bitmap 2
+                              --MACRLCs.[0].local_n_address 192.168.71.172
+                              --rfsimulator.[0].serveraddr 192.168.71.181
+    depends_on:
+      - oai-cu
+      - oai-nr-ue
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.172
+    volumes:
+      - ./oai-conf/gnb-du.sa.band78.106prb.rfsim.conf:/opt/oai-gnb/etc/gnb.conf
+    healthcheck:
+      test: /bin/bash -c "pgrep nr-softmodem"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ------------------------------------------------------------------ HandoverLLM
+  ran-xapp:
+    container_name: llmlab-ran-xapp
+    image: llm-lab/ai-ran-llm:latest
+    build:
+      context: ../../..
+      dockerfile: integrations/flexric/testbed/Dockerfile.ai_ran_llm
+    command: >
+      ran-xapp --cells /app/integrations/flexric/cells.example.json
+               --bridge 0.0.0.0:7000 --actuator bridge ${LIVE---live}
+               --audit /out/ran_audit.jsonl
+    volumes:
+      - ./out:/out
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.162
+
+  lab-drive:
+    container_name: llmlab-lab-drive
+    image: llm-lab/ai-ran-llm:latest
+    command: >
+      ran-lab-drive --cells /app/integrations/flexric/cells.example.json
+                    --xapp 192.168.71.162:7000 --listen 0.0.0.0:7001
+                    --ue-telnet 192.168.71.181:8091 --channel 0=0 --channel 1=1
+                    --speed-kmh ${SPEED_KMH:-30} --ploss-max-db ${PLOSS_MAX_DB:-45}
+                    --duration-s ${DURATION_S:-240} --summary /out/lab_drive_summary.json
+    volumes:
+      - ./out:/out
+    depends_on:
+      - ran-xapp
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.163
+
+  llm-bridge:
+    container_name: llmlab-llm-bridge
+    image: llm-lab/flexric:d7a7128
+    command: ["stdbuf", "-o0", "llm_bridge"]
+    environment:
+      LLM_BRIDGE_XAPP: 192.168.71.163:7001
+      LLM_BRIDGE_POLL_MS: "500"
+    volumes:
+      - ./flexric.conf:/usr/local/etc/flexric/flexric.conf
+    depends_on:
+      - nearRT-RIC
+      - lab-drive
+    networks:
+      public_net:
+        ipv4_address: 192.168.71.161
+
+networks:
+  public_net:
+    driver: bridge
+    name: llmlab-public-net
+    ipam:
+      config:
+        - subnet: 192.168.71.128/26
+    driver_opts:
+      com.docker.network.bridge.name: "llmlab-public"
+  traffic_net:
+    driver: bridge
+    name: llmlab-traffic-net
+    ipam:
+      config:
+        - subnet: 192.168.72.128/26
+    driver_opts:
+      com.docker.network.bridge.name: "llmlab-traffic"

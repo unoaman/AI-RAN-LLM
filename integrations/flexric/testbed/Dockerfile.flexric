@@ -1,0 +1,47 @@
+# FlexRIC (the commit OAI pins) + the HandoverLLM bridge xApp, in one image:
+#   nearRT-RIC, llm_bridge, llm_bridge_test, xapp_rc_moni, xapp_rc_handover.
+# Build context: integrations/flexric (see docker-compose.yml).
+# Mirrors FlexRIC's docker/Dockerfile.flexric.ubuntu (without the SWIG/Python xApp layer).
+
+ARG BASE_IMAGE=ubuntu:jammy
+FROM $BASE_IMAGE AS builder
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install --yes --no-install-recommends \
+      build-essential ca-certificates git libsctp-dev cmake ninja-build bison flex m4 automake libtool \
+      autoconf libpcre2-dev python3 gcc-12 g++-12 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# asn1c fork and commit used by FlexRIC's own Dockerfile
+RUN git clone https://github.com/mouse07410/asn1c /tmp/asn1c && cd /tmp/asn1c && \
+    git checkout 940dd5fa9f3917913fd487b13dfddfacd0ded06e && \
+    autoreconf -iv && ./configure --prefix /opt/asn1c/ && make -j"$(nproc)" && make install && rm -rf /tmp/asn1c
+ENV PATH=/opt/asn1c/bin:$PATH
+
+# FlexRIC at the commit OAI's openair2/E2AP/flexric submodule pins (OAI develop, Sep 2026)
+ARG FLEXRIC_REPO=https://github.com/duranta-project/flexric.git
+ARG FLEXRIC_COMMIT=d7a71285f3720fbc1487e9a86309eec5fb61a408
+ARG E2AP_VERSION=E2AP_V3
+ARG KPM_VERSION=KPM_V3_00
+RUN git clone "$FLEXRIC_REPO" /flexric && cd /flexric && git checkout "$FLEXRIC_COMMIT"
+
+COPY llm_bridge /flexric/examples/xApp/c/llm_bridge
+RUN echo "add_subdirectory(llm_bridge)" >> /flexric/examples/xApp/c/CMakeLists.txt && \
+    mkdir /flexric/build && cd /flexric/build && \
+    cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DE2AP_VERSION=$E2AP_VERSION -DKPM_VERSION=$KPM_VERSION \
+          -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12 .. && \
+    ninja && ninja install && \
+    ./examples/xApp/c/llm_bridge/llm_bridge_test
+
+FROM $BASE_IMAGE
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install --yes --no-install-recommends libsctp1 procps netcat-openbsd && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /usr/local/lib/flexric /usr/local/lib/flexric
+COPY --from=builder /flexric/build/examples/ric/nearRT-RIC /usr/local/bin/nearRT-RIC
+COPY --from=builder /flexric/build/examples/xApp/c/llm_bridge/llm_bridge /usr/local/bin/llm_bridge
+COPY --from=builder /flexric/build/examples/xApp/c/llm_bridge/llm_bridge_test /usr/local/bin/llm_bridge_test
+COPY --from=builder /flexric/build/examples/xApp/c/monitor/xapp_rc_moni /usr/local/bin/xapp_rc_moni
+COPY --from=builder /flexric/build/examples/xApp/c/rc_handover/xapp_rc_handover /usr/local/bin/xapp_rc_handover
+COPY --from=builder /flexric/flexric.conf /usr/local/etc/flexric/flexric.conf
+RUN ldconfig
+CMD ["stdbuf", "-o0", "nearRT-RIC"]
