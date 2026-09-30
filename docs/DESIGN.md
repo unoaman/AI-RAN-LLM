@@ -1685,6 +1685,10 @@ reporting well (200 ms, 8 neighbours, RRC-quantised).
 3. Iterative DAgger: roll out the model, relabel its states with the teacher, retrain.
 4. RL fine-tuning on closed-loop KPIs starting from the supervised model.
 5. Pass `ObsConfig` through `train`/CLI; KV cache for rationale generation.
+7. Location-aware handover: position / heading and radio-map forecasts from a helper Location
+   xApp. Concept, simulator evidence (position at 10–30 m error catches about 10–13 % more
+   teacher handovers at equal precision) and a validation plan are in
+   `docs/LOCATION_AWARE_HANDOVER.md`.
 6. Shadow-mode evaluation on a live OCUDU/OAI testbed; a native FlexRIC actuator and an
    E2SM-RC REPORT (message copy) measurement source.
 

@@ -18,6 +18,10 @@ a near-RT RIC xApp (or an AI-RAN inference service next to the gNB).
 > architecture and interface diagrams, algorithms, assumptions, the reasoning behind each
 > decision (and alternatives rejected), a per-function reference, the artifacts, and the
 > complete experiment history.
+>
+> **Concept: location-aware handover** (position from AoA / RTT plus a radio-map "Location xApp"):
+> [`docs/LOCATION_AWARE_HANDOVER.md`](docs/LOCATION_AWARE_HANDOVER.md). It includes simulator
+> evidence and a validation plan; the code does not use location yet.
 
 ## Why an LLM for handover?
 
